@@ -2160,6 +2160,26 @@ class TestOVNMechanismDriver(TestOVNMechanismDriverBase):
                 self.context, port)
             self.assertEqual('fake-src,fake-dest',
                              options.options['requested-chassis'])
+            self.assertEqual('1500', options.mtu)
+            mock_get_network.assert_called_once_with(mock.ANY, 'foo')
+
+    def test__get_port_options_with_ovn_lb_hm_port_embedded_network(self):
+        with mock.patch.object(
+                self.mech_driver._plugin, 'get_network') as mock_get_network:
+            port = {
+                'id': 'ovn-lb-hm-port',
+                'mac_address': '00:00:00:00:00:00',
+                'device_owner': ovn_const.OVN_LB_HM_PORT_DISTRIBUTED,
+                'device_id': 'ovn-lb-hm-foo',
+                'network_id': 'foo',
+                'network': {'id': 'foo', 'mtu': 1442},
+                'fixed_ips': [],
+                portbindings.PROFILE: {},
+            }
+            options = self.mech_driver._ovn_client._get_port_options(
+                self.context, port)
+            self.assertEqual('1442', options.mtu)
+            mock_get_network.assert_not_called()
 
     def test__get_port_options_migrating_additional_chassis_present(self):
         port = {

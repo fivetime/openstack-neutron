@@ -100,6 +100,14 @@ def _get_gw_ips_for_switch(nb_idl, switch):
     return gw_ips
 
 
+def _get_fip_ips_for_network(nb_idl, n_net_id):
+    return [nat.external_ip
+            for nat in nb_idl.tables['NAT'].rows.values()
+            if (nat.type == 'dnat_and_snat' and
+                nat.external_ids.get(
+                    ovn_const.OVN_FIP_NET_ID) == n_net_id)]
+
+
 def _make_main_router_policy_match(ic_switch_lrp_name, chassis_lrp_name):
     return (f'inport=="{ic_switch_lrp_name}" && '
             f'is_chassis_resident("cr-{chassis_lrp_name}")')
@@ -291,6 +299,9 @@ class ReconcileNeutronSwitchCommand(_NeutronSwitchBase):
             self.interconnect_switch_name,
             lrp_ips=_get_gw_ips_for_switch(self.api, self.n_switch),
         ).run_idl(txn)
+
+        n_net_id = helpers.get_neutron_id_from_ovn_name(self.n_switch)
+        ReconcileFIPArpProxyCommand(self.api, n_net_id).run_idl(txn)
 
         ReconcileMainRouterPoliciesForProviderCommand(
             self.api,
@@ -599,16 +610,6 @@ class ConnectMainRouterToInterconnectSwitchCommand(
         super().__init__(
             api, constants.MAIN_ROUTER_NAME, interconnect_switch_name, lrp_ips)
 
-    @property
-    def lsp_options(self):
-        ipv4_ips = ' '.join(
-            ip for ip in self.lrp_ips
-            if netaddr.IPNetwork(ip).version == 4)
-        opts = super().lsp_options
-        if ipv4_ips:
-            opts[ovn_const.LSP_OPTIONS_ARP_PROXY] = ipv4_ips
-        return opts
-
 
 class ReconcileGatewayIPCommand(ovs_cmd.BaseCommand):
     def __init__(self, api, dhcp_opt):
@@ -626,8 +627,6 @@ class ReconcileGatewayIPCommand(ovs_cmd.BaseCommand):
                 f"neutron-{n_net_id}"))
         self.lrp_name = helpers.get_lrp_name(
             constants.MAIN_ROUTER_NAME, interconnect_switch_name)
-        self.lsp_name = helpers.get_lsp_name(
-            interconnect_switch_name, constants.MAIN_ROUTER_NAME)
 
     def run_idl(self, txn):
         try:
@@ -641,14 +640,31 @@ class ReconcileGatewayIPCommand(ovs_cmd.BaseCommand):
         # stale data from the IDL cache, causing duplicates. addvalue is
         # idempotent for set columns and avoids this race.
         lrp.addvalue('networks', self.gw_ip)
-        if netaddr.IPNetwork(self.gw_ip).version == 4:
-            try:
-                lsp = self.api.lookup('Logical_Switch_Port', self.lsp_name)
-            except idlutils.RowNotFound:
-                LOG.error("LSP %s not found", self.lsp_name)
-                return
+
+
+class ReconcileFIPArpProxyCommand(ovs_cmd.BaseCommand):
+    def __init__(self, api, n_net_id):
+        super().__init__(api)
+        self.n_net_id = n_net_id
+        interconnect_switch_name = (
+            helpers.get_provider_interconnect_switch_name(
+                f"neutron-{n_net_id}"))
+        self.lsp_name = helpers.get_lsp_name(
+            interconnect_switch_name, constants.MAIN_ROUTER_NAME)
+
+    def run_idl(self, txn):
+        try:
+            lsp = self.api.lookup('Logical_Switch_Port', self.lsp_name)
+        except idlutils.RowNotFound:
+            LOG.error("LSP %s not found, arp_proxy will not be set",
+                      self.lsp_name)
+            return
+        fip_ips = _get_fip_ips_for_network(self.api, self.n_net_id)
+        if fip_ips:
             lsp.setkey('options', ovn_const.LSP_OPTIONS_ARP_PROXY,
-                       self.gw_ip)
+                       ' '.join(sorted(fip_ips)))
+        else:
+            lsp.delkey('options', ovn_const.LSP_OPTIONS_ARP_PROXY)
 
 
 class ConnectChassisRouterToSwitchCommand(ConnectRouterToSwitchCommand):
@@ -886,3 +902,74 @@ class FullSyncBGPTopologyCommand(ovs_cmd.BaseCommand):
         ReconcileMainRouterCommand(
             self.api,
         ).run_idl(txn)
+
+
+class LeakSubnetCommand(ovs_cmd.BaseCommand):
+    def __init__(self, api, tenant_ls_name, subnet_cidr, nexthop_ip):
+        super().__init__(api)
+        self.tenant_ls_name = tenant_ls_name
+        self.subnet_cidr = subnet_cidr
+        self.nexthop_ip = nexthop_ip
+
+    def run_idl(self, txn):
+        ConnectRouterToSwitchCommand(
+            self.api,
+            constants.MAIN_ROUTER_NAME,
+            self.tenant_ls_name,
+        ).run_idl(txn)
+
+        try:
+            provider_switch = _get_provider_switch(self.api)
+        except exceptions.ReconcileError:
+            LOG.warning("Provider switch not found, skipping static "
+                        "route creation for subnet %s.",
+                        self.subnet_cidr)
+            return
+
+        interconnect_switch_name = (
+            helpers.get_provider_interconnect_switch_name(
+                provider_switch.name))
+        output_port = helpers.get_lrp_name(
+            constants.MAIN_ROUTER_NAME, interconnect_switch_name)
+
+        nb_cmd.LrRouteAddCommand(
+            self.api,
+            constants.MAIN_ROUTER_NAME,
+            self.subnet_cidr,
+            self.nexthop_ip,
+            port=output_port,
+            may_exist=True,
+        ).run_idl(txn)
+
+
+class UnleakSubnetCommand(ovs_cmd.BaseCommand):
+    def __init__(self, api, tenant_ls_name, subnet_cidr,
+                 last_on_network=True):
+        super().__init__(api)
+        self.tenant_ls_name = tenant_ls_name
+        self.subnet_cidr = subnet_cidr
+        self.last_on_network = last_on_network
+
+    def run_idl(self, txn):
+        nb_cmd.LrRouteDelCommand(
+            self.api,
+            constants.MAIN_ROUTER_NAME,
+            self.subnet_cidr,
+            if_exists=True,
+        ).run_idl(txn)
+
+        if self.last_on_network:
+            lrp_name = helpers.get_lrp_name(
+                constants.MAIN_ROUTER_NAME, self.tenant_ls_name)
+            lsp_name = helpers.get_lsp_name(
+                self.tenant_ls_name, constants.MAIN_ROUTER_NAME)
+            nb_cmd.LrpDelCommand(
+                self.api,
+                lrp_name,
+                if_exists=True,
+            ).run_idl(txn)
+            nb_cmd.LspDelCommand(
+                self.api,
+                lsp_name,
+                if_exists=True,
+            ).run_idl(txn)

@@ -19,6 +19,7 @@ from oslo_log import log as logging
 
 from neutron.common.ovn import constants as ovn_const
 from neutron.common.ovn import utils as ovn_utils
+from neutron.common import wsgi_utils
 from neutron.objects import ports as port_objects
 from neutron.services.pvlan import exceptions as pvlan_exc
 
@@ -33,14 +34,23 @@ ISOLATED_PORT_GROUP_PREFIX = "pvlan_isolated"
 COMMUNITY_PORT_GROUP_PREFIX = "pvlan_community"
 PROMISCUOUS_PORT_GROUP_PREFIX = "pvlan_promiscuous"
 DROP_PORT_GROUP_NAME = "pvlan_pg_drop"
+PVLAN_PREFIXES = (ISOLATED_PORT_GROUP_PREFIX, COMMUNITY_PORT_GROUP_PREFIX,
+    PROMISCUOUS_PORT_GROUP_PREFIX, DROP_PORT_GROUP_NAME)
 
 
-def _initialize_pvlan_pg_drop(resource, event, trigger, payload=None):
+@ovn_utils.retry()
+def create_pvlan_pg_drop():
     """Create pvlan_pg_drop Port Group.
 
     Same pattern as neutron_pg_drop but at higher priority to override
     security group allows for PVLAN ports.
     """
+    if not wsgi_utils.is_first_api_worker():
+        # NOTE(ralonsoh): the creation operation of the ``pvlan_pg_drop``
+        # Port_Group needs to be executed only once. Only worker 1 will execute
+        # it.
+        return
+
     pg_name = DROP_PORT_GROUP_NAME
     command = [
         "OVN_Northbound", {
@@ -84,16 +94,20 @@ def _initialize_pvlan_pg_drop(resource, event, trigger, payload=None):
     ovn_utils.OvsdbClientTransactCommand.run(command)
 
 
+def _initialize_pvlan_pg_drop(resource, event, trigger, payload=None):
+    create_pvlan_pg_drop()
+
+
 def register(mech_driver):
     def _register_pvlan_driver(resource, event, trigger, payload=None):
         driver = PVLANDriver.create(mech_driver=mech_driver)
         if driver.is_loaded:
+            registry.subscribe(_initialize_pvlan_pg_drop,
+                               resources.PROCESS, events.AFTER_INIT)
             trigger.register_driver(driver)
 
     registry.subscribe(_register_pvlan_driver,
                        PVLAN_PLUGIN, events.BEFORE_SPAWN)
-    registry.subscribe(_initialize_pvlan_pg_drop,
-                       resources.PROCESS, events.AFTER_INIT)
 
 
 class PVLANDriver:
@@ -202,7 +216,8 @@ class PVLANDriver:
                 direction=direction, match=match, may_exist=True,
                 **{"neutron:network_id": network_id}))
 
-    def _get_pg_name(self, network_id, pvlan_type, community=None):
+    @staticmethod
+    def _get_pg_name(network_id, pvlan_type, community=None):
         net_id = network_id.replace('-', '_')
         if pvlan_type == pvlan_const.COMMUNITY_TYPE:
             return "%s_%s_%s" % (

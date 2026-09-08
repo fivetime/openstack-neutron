@@ -20,7 +20,6 @@ import threading
 
 import futurist
 from futurist import periodics
-from neutron.common import wsgi_utils
 from neutron_lib.api.definitions import external_net
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.api.definitions import provider_net as pnet
@@ -39,6 +38,7 @@ from ovsdbapp.backend.ovs_idl import rowview
 
 from neutron.common.ovn import constants as ovn_const
 from neutron.common.ovn import utils
+from neutron.common import wsgi_utils
 from neutron.conf.agent import ovs_conf
 from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf
 from neutron.db import ovn_hash_ring_db as hash_ring_db
@@ -1500,13 +1500,10 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
             raise periodics.NeverAgain()
 
         # If not active, remove all pvlan port groups:
-        pvlan_prefixes = (pvlan_ovn_driver.ISOLATED_PORT_GROUP_PREFIX,
-                          pvlan_ovn_driver.PROMISCUOUS_PORT_GROUP_PREFIX,
-                          pvlan_ovn_driver.COMMUNITY_PORT_GROUP_PREFIX,
-                          pvlan_ovn_driver.DROP_PORT_GROUP_NAME)
         pgs = [
             pg for pg in self._nb_idl.tables['Port_Group'].rows.values()
-            if any(pg.name.startswith(p) for p in pvlan_prefixes)
+            if any(pg.name.startswith(p) for
+                   p in pvlan_ovn_driver.PVLAN_PREFIXES)
         ]
         if pgs:
             with self._nb_idl.transaction(check_error=True) as txn:

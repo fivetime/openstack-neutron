@@ -61,13 +61,17 @@ class TestUtils(base.BaseTestCase):
             resolver_file=resolver_file_name)
         self.assertEqual(expected_dns_resolvers, observed_dns_resolvers)
 
-    def _test_is_chassis(self, is_gateway=False, is_extport=False):
+    def _test_is_chassis(self, is_gateway=False, is_extport=False,
+                         is_evpn_gateway=False):
         if is_gateway:
             cms_option_value = constants.CMS_OPT_CHASSIS_AS_GW
             func = utils.is_gateway_chassis
         if is_extport:
             cms_option_value = constants.CMS_OPT_CHASSIS_AS_EXTPORT_HOST
             func = utils.is_extport_host_chassis
+        if is_evpn_gateway:
+            cms_option_value = constants.CMS_OPT_CHASSIS_AS_EVPN_GW
+            func = utils.is_evpn_gateway_chassis
 
         chassis = fakes.FakeOvsdbRow.create_one_ovsdb_row(attrs={
             'other_config': {'ovn-cms-options': cms_option_value}})
@@ -85,6 +89,14 @@ class TestUtils(base.BaseTestCase):
 
     def test_is_extport_host_chassis(self):
         self._test_is_chassis(is_extport=True)
+
+    def test_is_evpn_gateway_chassis(self):
+        self._test_is_chassis(is_evpn_gateway=True)
+
+    def test_is_evpn_gateway_chassis_not_implied_by_gateway(self):
+        chassis = fakes.FakeOvsdbRow.create_one_ovsdb_row(attrs={
+            'other_config': {'ovn-cms-options': 'enable-chassis-as-gw'}})
+        self.assertFalse(utils.is_evpn_gateway_chassis(chassis))
 
     def test_get_chassis_availability_zones_no_azs(self):
         chassis = fakes.FakeOvsdbRow.create_one_ovsdb_row(attrs={

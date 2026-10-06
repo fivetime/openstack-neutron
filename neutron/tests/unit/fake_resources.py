@@ -194,6 +194,7 @@ class FakeOvsdbSbOvnIdl:
         self._get_chassis_physnets.return_value = ['fake-physnet']
         self.get_chassis_and_physnets = mock.Mock()
         self.get_gateway_chassis_from_cms_options = mock.Mock(return_value=[])
+        self.get_evpn_gateway_chassis = mock.Mock(return_value=[])
         self.get_extport_chassis_from_cms_options = mock.Mock(return_value=[])
         self.is_col_present = mock.Mock()
         self.is_col_present.return_value = False

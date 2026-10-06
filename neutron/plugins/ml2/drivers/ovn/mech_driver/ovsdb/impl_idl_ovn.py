@@ -1080,6 +1080,14 @@ class OvsdbSbOvnIdl(sb_impl_idl.OvnSbApiIdlImpl, Backend):
                 for ch in self.chassis_list().execute(check_error=True)
                 if utils.is_gateway_chassis(ch)]
 
+    def get_evpn_gateway_chassis(self):
+        chassis = self.chassis_list().execute(check_error=True)
+        evpn_gw = [ch.name for ch in chassis
+                   if utils.is_evpn_gateway_chassis(ch)]
+        if evpn_gw:
+            return evpn_gw
+        return [ch.name for ch in chassis if utils.is_gateway_chassis(ch)]
+
     def get_extport_chassis_from_cms_options(self):
         return [ch for ch in self.chassis_list().execute(check_error=True)
                 if utils.is_extport_host_chassis(ch)]

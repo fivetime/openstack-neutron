@@ -473,6 +473,7 @@ OVN_CMS_OPTIONS = 'ovn-cms-options'
 OVN_BRIDGE_MAPPINGS = 'ovn-bridge-mappings'
 CMS_OPT_CHASSIS_AS_GW = 'enable-chassis-as-gw'
 CMS_OPT_CHASSIS_AS_EXTPORT_HOST = 'enable-chassis-as-extport-host'
+CMS_OPT_CHASSIS_AS_EVPN_GW = 'enable-chassis-as-evpn-gw'
 CMS_OPT_AVAILABILITY_ZONES = 'availability-zones'
 CMS_OPT_CARD_SERIAL_NUMBER = 'card-serial-number'
 

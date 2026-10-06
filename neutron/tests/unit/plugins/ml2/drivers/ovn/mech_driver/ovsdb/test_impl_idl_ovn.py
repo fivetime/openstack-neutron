@@ -1028,6 +1028,45 @@ class TestSBImplIdlOvnGetChassisByCardSerialFromCMSOptions(
                 'fake-serial').hostname)
 
 
+class TestSBImplIdlOvnGetEvpnGatewayChassis(TestSBImplIdlOvnBase):
+
+    @staticmethod
+    def _chassis(name, cms_options):
+        return fakes.FakeOvsdbRow.create_one_ovsdb_row(attrs={
+            'name': name,
+            'other_config': {ovn_const.OVN_CMS_OPTIONS: cms_options}})
+
+    def _set_chassis(self, chassis):
+        cmd = mock.Mock()
+        cmd.execute.return_value = chassis
+        mock.patch.object(self.sb_ovn_idl, 'chassis_list',
+                          return_value=cmd).start()
+
+    def test_only_evpn_gateway_chassis(self):
+        self._set_chassis([
+            self._chassis('gw1', 'enable-chassis-as-gw'),
+            self._chassis('evpn1',
+                          'enable-chassis-as-gw,enable-chassis-as-evpn-gw'),
+            self._chassis('evpn2', 'enable-chassis-as-evpn-gw'),
+            self._chassis('compute1', ''),
+        ])
+        self.assertEqual(['evpn1', 'evpn2'],
+                         self.sb_ovn_idl.get_evpn_gateway_chassis())
+
+    def test_fall_back_to_gateway_chassis(self):
+        self._set_chassis([
+            self._chassis('gw1', 'enable-chassis-as-gw'),
+            self._chassis('gw2', 'enable-chassis-as-gw,availability-zones=a'),
+            self._chassis('compute1', ''),
+        ])
+        self.assertEqual(['gw1', 'gw2'],
+                         self.sb_ovn_idl.get_evpn_gateway_chassis())
+
+    def test_no_gateway_chassis(self):
+        self._set_chassis([self._chassis('compute1', '')])
+        self.assertEqual([], self.sb_ovn_idl.get_evpn_gateway_chassis())
+
+
 class TestSystemPoll(base.BaseTestCase):
 
     # select.poll is a builtin function, not a type, so compare against the

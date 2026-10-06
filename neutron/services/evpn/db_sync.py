@@ -232,8 +232,7 @@ class EvpnOvnSynchronizer(db_sync_base.BaseOvnDbSynchronizer):
 
         repair = self.mode == n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR
         if repair:
-            gw_chassis = (
-                self.ovn_sb_api.get_gateway_chassis_from_cms_options())
+            gw_chassis = self.ovn_sb_api.get_evpn_gateway_chassis()
             syncer = EvpnRepairSynchronizer(self.ovn_nb_api, gw_chassis)
         else:
             syncer = EvpnLoggingSynchronizer()

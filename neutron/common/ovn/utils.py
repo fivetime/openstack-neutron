@@ -940,6 +940,12 @@ def is_extport_host_chassis(chassis):
             get_ovn_cms_options(chassis))
 
 
+def is_evpn_gateway_chassis(chassis):
+    """Check if the given Chassis is marked to host EVPN router ports"""
+    return (constants.CMS_OPT_CHASSIS_AS_EVPN_GW in
+            get_ovn_cms_options(chassis))
+
+
 def get_port_capabilities(port):
     """Return a list of port's capabilities"""
     return port.get(portbindings.PROFILE, {}).get(constants.PORT_CAP_PARAM, [])

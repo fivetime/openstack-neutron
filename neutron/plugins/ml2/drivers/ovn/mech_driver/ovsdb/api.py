@@ -651,6 +651,22 @@ class SbAPI(api.API, metaclass=abc.ABCMeta):
         """
 
     @abc.abstractmethod
+    def get_evpn_gateway_chassis(self):
+        """Get the names of the chassis that can host EVPN router ports.
+
+        An EVPN router port needs the EVPN pieces on the chassis it is bound
+        to (the OVN agent's ovn-evpn extension and a BGP speaker), which not
+        every gateway chassis has. Chassis marked with
+
+        ovs-vsctl set open .
+           external_ids:ovn-cms-options="enable-chassis-as-evpn-gw"
+
+        are returned when there is at least one; otherwise every gateway
+        chassis (enable-chassis-as-gw) is returned, as before this option
+        existed.
+        """
+
+    @abc.abstractmethod
     def get_gateway_chassis_from_cms_options(self, name_only=True):
         """Get chassis eligible for external connectivity from CMS options.
 

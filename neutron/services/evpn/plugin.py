@@ -157,6 +157,12 @@ class EVPNPlugin(service_base.ServicePluginBase):
         gw_chassis, candidates = (
             self._sb_idl.get_gateway_chassis_with_az_filter(
                 az_hints=router.get('availability_zone_hints', [])))
+        # Only chassis with the EVPN pieces can host the VRF: when some
+        # chassis are marked enable-chassis-as-evpn-gw, schedule among them
+        # (every gateway chassis otherwise, see get_evpn_gateway_chassis).
+        evpn_gw_chassis = set(self._sb_idl.get_evpn_gateway_chassis())
+        gw_chassis &= evpn_gw_chassis
+        candidates &= evpn_gw_chassis
 
         hcg_load = self._compute_hcg_primary_load(chassis_names=gw_chassis)
         scheduler = evpn_scheduler.LeastLoadedChassisScheduler(hcg_load)

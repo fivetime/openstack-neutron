@@ -53,6 +53,8 @@ class TestEVPNPlugin(test_db_base_plugin_v2.NeutronDbPluginV2TestCase,
         self.txn = self.nb_idl.transaction.return_value.__enter__.return_value
         self.sb_idl.get_gateway_chassis_with_az_filter.return_value = (
             {'gw1', 'gw2'}, {'gw1', 'gw2'})
+        # No chassis marked enable-chassis-as-evpn-gw: every gateway chassis.
+        self.sb_idl.get_evpn_gateway_chassis.return_value = ['gw1', 'gw2']
         self.nb_idl.get_ha_chassis_group_primaries.return_value = []
 
     def test_get_plugin_type(self):
@@ -99,6 +101,33 @@ class TestEVPNPlugin(test_db_base_plugin_v2.NeutronDbPluginV2TestCase,
             self.assertIsInstance(cmd, evpn_ovn.CreateEVPNRouterCommand)
             self.assertEqual(5000, cmd.vni)
             self.assertIsNotNone(cmd.vlan)
+            self.assertEqual({'gw1', 'gw2'}, set(cmd.gw_chassis))
+
+    def test_router_create_with_vni_evpn_gateway_chassis(self):
+        # Only the chassis marked enable-chassis-as-evpn-gw are scheduled,
+        # least loaded first, even when other gateway chassis are idle.
+        self.sb_idl.get_gateway_chassis_with_az_filter.return_value = (
+            {'gw1', 'gw2', 'evpn1', 'evpn2'}, {'gw1', 'gw2', 'evpn1', 'evpn2'})
+        self.sb_idl.get_evpn_gateway_chassis.return_value = ['evpn1', 'evpn2']
+        self.nb_idl.get_ha_chassis_group_primaries.return_value = [
+            'evpn1', 'evpn1', 'evpn2']
+        with self.router(as_admin=True,
+                         arg_list=('evpn_vni',), evpn_vni=5000):
+            cmd = self.txn.add.call_args[0][0]
+            self.assertEqual(['evpn2', 'evpn1'], cmd.gw_chassis)
+            (self.sb_idl.get_gateway_chassis_from_cms_options
+                .assert_not_called())
+
+    def test_router_create_with_vni_evpn_gateway_chassis_az_hints(self):
+        # The AZ hints still apply: an EVPN gateway chassis outside the
+        # requested zones is not a candidate.
+        self.sb_idl.get_gateway_chassis_with_az_filter.return_value = (
+            {'gw1', 'evpn1', 'evpn2'}, {'gw1', 'evpn2'})
+        self.sb_idl.get_evpn_gateway_chassis.return_value = ['evpn1', 'evpn2']
+        with self.router(as_admin=True,
+                         arg_list=('evpn_vni',), evpn_vni=5000):
+            cmd = self.txn.add.call_args[0][0]
+            self.assertEqual(['evpn2'], cmd.gw_chassis)
 
     def test_router_create_with_vni_non_ovn_flavor(self):
         res = self._create_router(

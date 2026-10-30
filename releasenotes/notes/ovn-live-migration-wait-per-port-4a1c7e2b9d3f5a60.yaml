@@ -1,0 +1,10 @@
+---
+fixes:
+  - |
+    [OVN] During a live migration to a chassis with the ``system`` datapath,
+    every port of the instance is now set UP once the destination chassis has
+    installed its flows. Before, when two or more ports of the instance were
+    claimed on the destination chassis before the first one was set UP, only
+    one of them was, and Nova rolled the migration back after
+    ``vif_plugging_timeout``. For more information, see bug
+    `2172645 <https://bugs.launchpad.net/neutron/+bug/2172645>`_.

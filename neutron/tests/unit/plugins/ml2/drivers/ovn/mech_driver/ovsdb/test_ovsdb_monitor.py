@@ -20,6 +20,7 @@ import uuid
 
 from neutron_lib.plugins import constants as n_const
 from neutron_lib.plugins import directory
+from neutron_lib.plugins.ml2 import ovs_constants
 from oslo_utils import timeutils
 from oslo_utils import uuidutils
 from ovs.db import idl as ovs_idl
@@ -536,6 +537,60 @@ class TestPortBindingChassisUpdateEvent(base.BaseTestCase):
             expected_match=True, expected_status_up=False)
         self.driver.nb_ovn.lookup.assert_called_once_with(
             'Logical_Switch_Port', 'foo')
+
+    def test_live_migration_two_ports_same_chassis(self):
+        # Two ports of one instance are claimed on the same "system" datapath
+        # destination chassis before that chassis reaches the bumped nb_cfg.
+        # Each port must get its own wait on the real notify handler and both
+        # must be set UP once the chassis catches up.
+        handler = ovsdb_monitor.OvnDbNotifyHandler(self.driver)
+        self.addCleanup(handler.shutdown)
+        self.driver.sb_ovn.idl.notify_handler = handler
+        self.driver.nb_ovn.nb_global.nb_cfg = 5
+        self.driver.sb_ovn.db_find.return_value.execute.return_value = [
+            {'other_config': {
+                ovn_const.OVN_DATAPATH_TYPE:
+                    ovs_constants.OVS_DATAPATH_SYSTEM}}]
+        ovsdb_row = fakes.FakeOvsdbRow.create_one_ovsdb_row
+        self.driver.nb_ovn.lookup.return_value = ovsdb_row(
+            attrs={'up': [True], 'enabled': [True]})
+        dst_chassis = ovsdb_row(attrs={'name': 'dst'})
+        for port in ('port-a', 'port-b'):
+            self.event.run(
+                self.event.ROW_UPDATE,
+                ovsdb_row(attrs={'chassis': 'src', 'type': '_fake_',
+                                 'logical_port': port,
+                                 'additional_chassis': [dst_chassis]}),
+                ovsdb_row(attrs={'additional_chassis': []}))
+        self.driver.set_port_status_up.assert_not_called()
+
+        waits = [e for e in handler._watched_events
+                 if isinstance(e, ovsdb_monitor.WaitForChassisNbCfgEvent)]
+        self.assertEqual(2, len(waits))
+        for wait in waits:
+            self.addCleanup(wait._timer.cancel)
+
+        cptable = fakes.FakeOvsdbTable.create_one_ovsdb_table(
+            attrs={'name': 'Chassis_Private'})
+        row = ovsdb_row(attrs={'_table': cptable, 'name': 'dst',
+                               'nb_cfg': 6})
+        old = ovsdb_row(attrs={'_table': cptable, 'nb_cfg': 5})
+        # ovsdbapp logs a match with idlutils.row2str, which needs a real UUID.
+        row.uuid = old.uuid = uuid.uuid4()
+        matches = handler.matching_events(
+            self.event.ROW_UPDATE, row, old, global_=True)
+        self.assertEqual(set(waits), set(matches))
+        for match in matches:
+            match.run(self.event.ROW_UPDATE, row, old)
+        self.driver.set_port_status_up.assert_has_calls(
+            [mock.call('port-a'), mock.call('port-b')], any_order=True)
+        self.assertEqual(2, self.driver.set_port_status_up.call_count)
+
+        # The waits are one-time: an expired timer of one port must not drop
+        # the wait of the other.
+        handler.watch_event(waits[0])
+        waits[1]._expire()
+        self.assertIn(waits[0], set(handler._watched_events))
 
 
 class TestPortBindingUpdateVirtualPortsEvent(base.BaseTestCase):

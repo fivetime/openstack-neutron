@@ -258,6 +258,16 @@ class WaitForChassisNbCfgEvent(utils.TimedOnetimeEvent):
         self._port_id = port_id
         self._expected_nb_cfg = expected_nb_cfg
 
+    @property
+    def key(self):
+        # The event handler keeps the watched events in a set and RowEvent
+        # equality only looks at the class, table, events and conditions.
+        # Without the port in the key, a second port of the same instance
+        # claimed on the same destination chassis before the first wait fired
+        # would be equal to the first wait, would not be added and would never
+        # be set UP; its timer would also unwatch the first wait.
+        return super().key + (self._port_id,)
+
     def match_fn(self, event, row, old):
         if not hasattr(old, 'nb_cfg'):
             return False

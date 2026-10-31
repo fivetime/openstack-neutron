@@ -1,0 +1,9 @@
+---
+fixes:
+  - |
+    The OVN agent EVPN extension now removes a VNI's VLAN-to-VNI tunnel
+    mapping from the single VXLAN device before removing the VLAN itself.
+    Removing both in one request left FRR's zebra with a stale L2 VNI, which
+    kept advertising an EVPN Type-3 route after a router was deleted or its
+    gateway moved to another chassis. For more information see bug
+    `2172689 <https://bugs.launchpad.net/neutron/+bug/2172689>`_.

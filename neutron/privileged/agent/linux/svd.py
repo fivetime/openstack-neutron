@@ -349,10 +349,19 @@ def del_vni(br_evpn, vxlan_evpn, svi_name, lo_name, vni, vid):
         _bridge_del_vni(ipr, vxlan_idx, vni)
 
         # bridge vlan del dev <vxlan_evpn> vid <vid> tunnel_info id <vni>
+        # The tunnel mapping goes in a message of its own, while the VLAN is
+        # still on the port: the kernel then reports the port's VLAN without
+        # its VNI, which is how FRR's zebra learns that the mapping is gone.
+        # Deleting the VLAN and its mapping in one message removes both but
+        # only reports the VLAN as deleted, and zebra keeps the VNI as an L2
+        # VNI (still advertising a Type-3 route for it).
         _del_vlan_filter(
             ipr, vxlan_idx, vxlan_evpn,
-            vlan_info={'vid': vid},
             vlan_tunnel_info={'vid': vid, 'id': vni})
+        # bridge vlan del dev <vxlan_evpn> vid <vid>
+        _del_vlan_filter(
+            ipr, vxlan_idx, vxlan_evpn,
+            vlan_info={'vid': vid})
         # bridge vlan del dev <br_evpn> vid <vid> self
         _del_vlan_filter(
             ipr, br_idx, br_evpn,

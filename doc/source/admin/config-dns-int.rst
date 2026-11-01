@@ -86,6 +86,7 @@ Valid ``extension_drivers`` values related to the DNS integration are:
 * ``dns_domain_ports``
 * ``subnet_dns_publish_fixed_ip``
 * ``dns_domain_keywords``
+* ``network_internal_dns``
 
 .. note::
    The enablement of this functionality is prerequisite for the enablement of
@@ -252,3 +253,32 @@ In the above example notice that:
    enabled, a port's FQDN in the ``dns_assignment`` attribute will not be
    calculated as described above in some well defined cases. For a description
    of these cases please see :ref:`config-dns-int-ext-dns-assignment`.
+
+Disabling the internal DNS resolution in a network
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+With ``network_internal_dns`` added to ``extension_drivers``, the
+``internal_dns_enabled`` attribute of a network, ``True`` by default, enables
+or disables the internal DNS resolution in that network. This is useful in
+networks whose instances only use a DNS service reachable from the network.
+
+.. code-block:: console
+
+   $ openstack network set --disable-internal-dns my-network
+
+.. note::
+   ML2/OVN is the only backend honoring this attribute. An OVN logical switch
+   with DNS records sends every UDP DNS query of the switch to
+   ``ovn-controller``, even if the query is for a name OVN does not know, and
+   that limits the throughput of these queries. When the attribute is
+   ``False``, the network has no DNS records in the OVN Northbound database and
+   the queries go directly to their destination. The names of the instances of
+   the network are not resolved by OVN any more.
+
+Setting the attribute back to ``True`` restores the records of the existing
+ports. The ``dns_name`` and ``dns_assignment`` port attributes and the
+integration with an external DNS service, described in
+:ref:`config-dns-int-ext-serv`, do not depend on this attribute. The
+``update_network:internal_dns_enabled`` and
+``create_network:internal_dns_enabled`` policies control who can set it; by
+default the project members and the administrators.

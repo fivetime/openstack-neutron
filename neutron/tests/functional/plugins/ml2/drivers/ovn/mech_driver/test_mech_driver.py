@@ -23,12 +23,15 @@ import uuid
 import ddt
 import netaddr
 from neutron_lib.api.definitions import external_net
+from neutron_lib.api.definitions import network_internal_dns as ni_dns
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.api.definitions import qinq as qinq_apidef
 from neutron_lib.api.definitions import vlantransparent as vlan_apidef
 from neutron_lib import constants
+from neutron_lib import context as n_context
 from neutron_lib.db import api as db_api
 from neutron_lib.exceptions import agent as agent_exc
+from neutron_lib.ovn import constants as n_lib_ovn_const
 from oslo_config import cfg
 from oslo_utils import timeutils
 from oslo_utils import uuidutils
@@ -43,6 +46,7 @@ from neutron.db import ovn_hash_ring_db
 from neutron.db import ovn_revision_numbers_db as db_rev
 from neutron.plugins.ml2 import db as ml2_db
 from neutron.plugins.ml2.drivers.ovn.agent import neutron_agent as n_agent
+from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb import ovn_db_sync
 from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb import ovsdb_monitor
 from neutron.tests.functional import base
 from neutron.tests.unit.extensions import test_securitygroup as test_sg
@@ -1753,3 +1757,136 @@ class TestOvsDBConnectionsOverTcp(base.TestOVNFunctionalBase):
 class TestOvsDBConnectionsOverSsl(TestOvsDBConnectionsOverTcp):
     def get_ovsdb_server_protocol(self):
         return 'ssl'
+
+
+class TestNetworkInternalDns(base.TestOVNFunctionalBase):
+    _extension_drivers = ['port_security', 'dns', 'network_internal_dns']
+
+    def setUp(self):
+        common_conf.register_core_common_config_opts()
+        ovn_conf.cfg.CONF.set_override('dns_domain', 'ovn.test')
+        super().setUp()
+        self.plugin = self.mech_driver._plugin
+        self._ovn_client = self.mech_driver._ovn_client
+
+    def _create_dns_network(self, name='n1', **kwargs):
+        if kwargs:
+            kwargs['arg_list'] = tuple(kwargs)
+        return self._make_network(self.fmt, name, True, **kwargs)['network']
+
+    def _update_network_attr(self, network_id, enabled):
+        data = {'network': {ni_dns.INTERNAL_DNS_ENABLED: enabled}}
+        req = self.new_update_request('networks', data, network_id)
+        return self.deserialize(self.fmt,
+                                req.get_response(self.api))['network']
+
+    def _create_dns_port(self, network_id, dns_name):
+        return self._make_port(
+            self.fmt, network_id,
+            arg_list=('dns_name', 'device_id'),
+            dns_name=dns_name, device_id=uuidutils.generate_uuid())['port']
+
+    def _make_network_with_subnet(self, cidr='10.0.0.0/24', **kwargs):
+        network = self._create_dns_network(**kwargs)
+        self._make_subnet(self.fmt, {'network': network}, None, cidr)
+        return network
+
+    def _get_ls_and_dns_row(self, network_id):
+        return self.nb_api.get_ls_and_dns_record(utils.ovn_name(network_id))
+
+    def _assert_no_dns_row(self, network_id):
+        ls, dns_row = self._get_ls_and_dns_row(network_id)
+        self.assertIsNone(dns_row)
+        # The IDL hides a reference to a row that does not exist, the raw
+        # value of the column has it.
+        self.assertEqual([], ls._data['dns_records'].as_list())
+
+    def test_enabled_by_default_writes_records(self):
+        network = self._make_network_with_subnet()
+        self.assertIs(True, network[ni_dns.INTERNAL_DNS_ENABLED])
+        self._create_dns_port(network['id'], 'vm1')
+        _ls, dns_row = self._get_ls_and_dns_row(network['id'])
+        self.assertIn('vm1', dns_row.records)
+
+    def test_disabled_network_does_not_write_records(self):
+        network = self._make_network_with_subnet(
+            **{ni_dns.INTERNAL_DNS_ENABLED: False})
+        port = self._create_dns_port(network['id'], 'vm1')
+        self._assert_no_dns_row(network['id'])
+        # The port keeps its name, as the external DNS service uses it.
+        self.assertEqual('vm1', port['dns_name'])
+        self.assertEqual('vm1', port['dns_assignment'][0]['hostname'])
+
+    def test_update_port_in_disabled_network_does_not_write_records(self):
+        network = self._make_network_with_subnet(
+            **{ni_dns.INTERNAL_DNS_ENABLED: False})
+        port = self._create_dns_port(network['id'], 'vm1')
+        data = {'port': {'dns_name': 'vm2'}}
+        req = self.new_update_request('ports', data, port['id'])
+        res = self.deserialize(self.fmt, req.get_response(self.api))
+        self.assertEqual('vm2', res['port']['dns_name'])
+        self._assert_no_dns_row(network['id'])
+
+    def test_disable_removes_existing_records(self):
+        network = self._make_network_with_subnet()
+        self._create_dns_port(network['id'], 'vm1')
+        self.assertIsNotNone(self._get_ls_and_dns_row(network['id'])[1])
+
+        updated = self._update_network_attr(network['id'], False)
+
+        self.assertIs(False, updated[ni_dns.INTERNAL_DNS_ENABLED])
+        self._assert_no_dns_row(network['id'])
+
+    def test_enable_restores_the_records_of_all_ports(self):
+        network = self._make_network_with_subnet(
+            **{ni_dns.INTERNAL_DNS_ENABLED: False})
+        ports = [self._create_dns_port(network['id'], name)
+                 for name in ('vm1', 'vm2')]
+        self._assert_no_dns_row(network['id'])
+
+        self._update_network_attr(network['id'], True)
+
+        _ls, dns_row = self._get_ls_and_dns_row(network['id'])
+        for port in ports:
+            self.assertEqual(port['fixed_ips'][0]['ip_address'],
+                             dns_row.records[port['dns_name']])
+
+    def test_other_networks_are_not_affected(self):
+        network = self._make_network_with_subnet()
+        other = self._create_dns_network(name='n2')
+        self._make_subnet(self.fmt, {'network': other}, None, '10.0.1.0/24')
+        self._create_dns_port(network['id'], 'vm1')
+        self._create_dns_port(other['id'], 'vm2')
+
+        self._update_network_attr(network['id'], False)
+
+        self._assert_no_dns_row(network['id'])
+        _ls, dns_row = self._get_ls_and_dns_row(other['id'])
+        self.assertIn('vm2', dns_row.records)
+
+    def test_db_sync_does_not_write_back_and_removes_leftovers(self):
+        network = self._make_network_with_subnet(
+            **{ni_dns.INTERNAL_DNS_ENABLED: False})
+        self._create_dns_port(network['id'], 'vm1')
+        enabled = self._create_dns_network(name='n2')
+        self._make_subnet(self.fmt, {'network': enabled}, None, '10.0.1.0/24')
+        self._create_dns_port(enabled['id'], 'vm2')
+
+        # Leave a stale DNS row in the disabled network.
+        ls, _dns_row = self._get_ls_and_dns_row(network['id'])
+        with self.nb_api.transaction(check_error=True) as txn:
+            dns_add = txn.add(self.nb_api.dns_add(
+                external_ids={'ls_name': ls.name},
+                records={'stale': '10.0.0.100'}))
+            txn.add(self.nb_api.ls_set_dns_records(ls.uuid, dns_add))
+        self.assertIsNotNone(self._get_ls_and_dns_row(network['id'])[1])
+
+        synchronizer = ovn_db_sync.OvnNbSynchronizer(
+            self.plugin, self.mech_driver,
+            n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR)
+        self.addCleanup(synchronizer.stop)
+        synchronizer.sync_port_dns_records(n_context.get_admin_context())
+
+        self._assert_no_dns_row(network['id'])
+        _ls, dns_row = self._get_ls_and_dns_row(enabled['id'])
+        self.assertIn('vm2', dns_row.records)

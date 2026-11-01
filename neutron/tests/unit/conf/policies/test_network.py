@@ -71,6 +71,18 @@ class SystemAdminTests(NetworkAPITestCase):
             policy.enforce,
             self.context, 'create_network:is_default', self.alt_target)
 
+    def test_create_network_internal_dns_enabled(self):
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce,
+            self.context, 'create_network:internal_dns_enabled',
+            self.target)
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce,
+            self.context, 'create_network:internal_dns_enabled',
+            self.alt_target)
+
     def test_create_network_port_security_enabled(self):
         self.assertRaises(
             base_policy.InvalidScope,
@@ -288,6 +300,18 @@ class SystemAdminTests(NetworkAPITestCase):
             policy.enforce,
             self.context, 'update_network:is_default', self.alt_target)
 
+    def test_update_network_internal_dns_enabled(self):
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce,
+            self.context, 'update_network:internal_dns_enabled',
+            self.target)
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce,
+            self.context, 'update_network:internal_dns_enabled',
+            self.alt_target)
+
     def test_update_network_port_security_enabled(self):
         self.assertRaises(
             base_policy.InvalidScope,
@@ -375,6 +399,16 @@ class AdminTests(NetworkAPITestCase):
         self.assertTrue(
             policy.enforce(self.context,
                            'create_network:is_default', self.alt_target))
+
+    def test_create_network_internal_dns_enabled(self):
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'create_network:internal_dns_enabled',
+                           self.target))
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'create_network:internal_dns_enabled',
+                           self.alt_target))
 
     def test_create_network_port_security_enabled(self):
         self.assertTrue(
@@ -540,6 +574,16 @@ class AdminTests(NetworkAPITestCase):
             policy.enforce(self.context,
                            'update_network:is_default', self.alt_target))
 
+    def test_update_network_internal_dns_enabled(self):
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'update_network:internal_dns_enabled',
+                           self.target))
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'update_network:internal_dns_enabled',
+                           self.alt_target))
+
     def test_update_network_port_security_enabled(self):
         self.assertTrue(
             policy.enforce(self.context,
@@ -614,6 +658,17 @@ class ProjectManagerTests(AdminTests):
             base_policy.PolicyNotAuthorized,
             policy.enforce,
             self.context, 'create_network:is_default', self.alt_target)
+
+    def test_create_network_internal_dns_enabled(self):
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'create_network:internal_dns_enabled',
+                           self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_network:internal_dns_enabled',
+            self.alt_target)
 
     def test_create_network_port_security_enabled(self):
         self.assertTrue(
@@ -822,6 +877,17 @@ class ProjectManagerTests(AdminTests):
             policy.enforce,
             self.context, 'update_network:is_default', self.alt_target)
 
+    def test_update_network_internal_dns_enabled(self):
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'update_network:internal_dns_enabled',
+                           self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_network:internal_dns_enabled',
+            self.alt_target)
+
     def test_update_network_port_security_enabled(self):
         self.assertTrue(
             policy.enforce(self.context,
@@ -879,6 +945,18 @@ class ProjectReaderTests(ProjectMemberTests):
             base_policy.PolicyNotAuthorized,
             policy.enforce, self.context, 'create_network', self.alt_target)
 
+    def test_create_network_internal_dns_enabled(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_network:internal_dns_enabled',
+            self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_network:internal_dns_enabled',
+            self.alt_target)
+
     def test_create_network_port_security_enabled(self):
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
@@ -907,6 +985,18 @@ class ProjectReaderTests(ProjectMemberTests):
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
             policy.enforce, self.context, 'update_network', self.alt_target)
+
+    def test_update_network_internal_dns_enabled(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_network:internal_dns_enabled',
+            self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_network:internal_dns_enabled',
+            self.alt_target)
 
     def test_update_network_port_security_enabled(self):
         self.assertRaises(
@@ -975,6 +1065,13 @@ class ServiceRoleTests(NetworkAPITestCase):
             base_policy.PolicyNotAuthorized,
             policy.enforce,
             self.context, 'create_network:is_default', self.target)
+
+    def test_create_network_internal_dns_enabled(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_network:internal_dns_enabled',
+            self.target)
 
     def test_create_network_port_security_enabled(self):
         self.assertRaises(
@@ -1092,6 +1189,13 @@ class ServiceRoleTests(NetworkAPITestCase):
             base_policy.PolicyNotAuthorized,
             policy.enforce,
             self.context, 'update_network:is_default', self.target)
+
+    def test_update_network_internal_dns_enabled(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_network:internal_dns_enabled',
+            self.target)
 
     def test_update_network_port_security_enabled(self):
         self.assertRaises(

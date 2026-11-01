@@ -1,0 +1,28 @@
+---
+features:
+  - |
+    Added support for the ``network-internal-dns`` API extension to ML2/OVN.
+    The new ``internal_dns_enabled`` network attribute, ``True`` by default,
+    enables or disables the internal DNS resolution per network. An OVN logical
+    switch with DNS records sends every UDP DNS query of the switch to
+    ``ovn-controller``, even if the query is for a name OVN does not know. When
+    the attribute is ``False``, Neutron does not write the DNS records of the
+    network to the OVN Northbound database and removes the existing ones, so
+    these queries go directly to the DNS service the instances are using.
+    Setting the attribute back to ``True`` restores the records of the existing
+    ports. The attribute is handled by the new ``network_internal_dns`` ML2
+    extension driver, so operators must add it to ``[ml2] extension_drivers``
+    to expose it. The ``create_network:internal_dns_enabled`` and
+    ``update_network:internal_dns_enabled`` policies control who can set it; by
+    default the project members and the administrators.
+upgrade:
+  - |
+    A new database table, ``networkinternaldns``, is added by an expand
+    migration. Networks without a row in the table have the internal DNS
+    resolution enabled, so the existing networks keep their behavior.
+other:
+  - |
+    The ``dns_name`` and ``dns_assignment`` port attributes and the
+    publication of DNS records to an external DNS service do not depend on the
+    ``internal_dns_enabled`` network attribute. ML2/OVN is the only backend
+    honoring the attribute.

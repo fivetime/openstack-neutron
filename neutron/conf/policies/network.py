@@ -109,6 +109,16 @@ rules = [
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
     policy.DocumentedRuleDefault(
+        name='create_network:internal_dns_enabled',
+        check_str=lib_rules.ADMIN_OR_PROJECT_MEMBER,
+        scope_types=['project'],
+        description=(
+            'Specify ``internal_dns_enabled`` '
+            'attribute when creating a network'
+        ),
+        operations=ACTION_POST,
+    ),
+    policy.DocumentedRuleDefault(
         name='create_network:port_security_enabled',
         check_str=lib_rules.ADMIN_OR_PROJECT_MEMBER,
         scope_types=['project'],
@@ -381,6 +391,16 @@ rules = [
             check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
+    ),
+    policy.DocumentedRuleDefault(
+        name='update_network:internal_dns_enabled',
+        check_str=lib_rules.ADMIN_OR_PROJECT_MEMBER,
+        scope_types=['project'],
+        description=(
+            'Specify ``internal_dns_enabled`` '
+            'attribute when updating a network'
+        ),
+        operations=ACTION_PUT,
     ),
     policy.DocumentedRuleDefault(
         name='update_network:port_security_enabled',

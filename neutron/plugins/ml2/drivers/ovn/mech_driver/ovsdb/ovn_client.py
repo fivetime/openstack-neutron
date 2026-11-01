@@ -22,11 +22,13 @@ import netaddr
 
 from neutron_lib.api.definitions import l3
 from neutron_lib.api.definitions import l3_ext_gw_multihoming
+from neutron_lib.api.definitions import network_internal_dns as ni_dns_apidef
 from neutron_lib.api.definitions import port_security as psec
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.api.definitions import provider_net as pnet
 from neutron_lib.api.definitions import qinq as qinq_apidef
 from neutron_lib.api.definitions import segment as segment_def
+from neutron_lib.api import extensions
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
@@ -62,6 +64,7 @@ from neutron.conf.plugins.ml2.drivers.ovn.ovn_conf \
     import is_ovn_router_indirect_snat_enabled as is_nested_snat
 from neutron.db import ovn_revision_numbers_db as db_rev
 from neutron.db import segments_db
+from neutron.objects import network_internal_dns as ni_dns_obj
 from neutron.objects import router
 from neutron.plugins.ml2 import db as ml2_db
 from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb.extensions \
@@ -2578,13 +2581,15 @@ class OVNClient:
 
         if not network_needs_lswitch_flag:
             # VLAN-only routed networks: Update each segment logical switch
-            self.update_network_vlan_segments(context, network, segments)
+            self.update_network_vlan_segments(context, network, segments,
+                                              original_network)
         else:
             # Regular/mixed networks: Use existing behavior
             self._update_network_regular(context, network, original_network,
                                          segments)
 
-    def update_network_vlan_segments(self, context, network, segments):
+    def update_network_vlan_segments(self, context, network, segments,
+                                     original_network=None):
         """Update network for VLAN-only routed networks (segment switches)."""
         check_rev_cmds = []
         with self._nb_idl.transaction(check_error=True) as txn:
@@ -2606,6 +2611,10 @@ class OVNClient:
                 context, network['id'])
             for subnet in subnets:
                 self.update_subnet(context, subnet, network, txn)
+
+            self._sync_network_internal_dns(
+                context, network, original_network, txn,
+                [utils.ovn_name(segment['id']) for segment in segments])
 
         # Bump revision for each segment if transaction committed
         for i, check_rev_cmd in enumerate(check_rev_cmds):
@@ -2675,6 +2684,9 @@ class OVNClient:
 
             self._qos_driver.update_network(context, txn, network,
                                             original_network)
+
+            self._sync_network_internal_dns(
+                context, network, original_network, txn, [lswitch_name])
 
         if check_rev_cmd.result == ovn_const.TXN_COMMITTED:
             db_rev.bump_revision(context, network, ovn_const.TYPE_NETWORKS)
@@ -3337,7 +3349,102 @@ class OVNClient:
         if not self._nb_idl.is_table_present('DNS'):
             return False
 
-        return True
+        return self._is_port_network_internal_dns_enabled(port)
+
+    def _is_port_network_internal_dns_enabled(self, port):
+        network = port.get('network') or {}
+        if ni_dns_apidef.INTERNAL_DNS_ENABLED in network:
+            return network[ni_dns_apidef.INTERNAL_DNS_ENABLED]
+
+        # The port does not carry its network, as in the maintenance task or
+        # in the DB synchronization.
+        if not extensions.is_extension_supported(self._plugin,
+                                                 ni_dns_apidef.ALIAS):
+            return True
+        internal_dns = ni_dns_obj.NetworkInternalDns.get_object(
+            n_context.get_admin_context(), network_id=port['network_id'])
+        return internal_dns.enabled if internal_dns else True
+
+    def _sync_network_internal_dns(self, context, network, original_network,
+                                   txn, ls_names):
+        """Apply the network ``internal_dns_enabled`` value to the OVN DNS.
+
+        An OVN logical switch with DNS records diverts all its UDP DNS queries
+        to ovn-controller, hence the DNS row must be removed, not only left
+        without new records.
+        """
+        if ni_dns_apidef.INTERNAL_DNS_ENABLED not in network:
+            return
+
+        if not network[ni_dns_apidef.INTERNAL_DNS_ENABLED]:
+            self._remove_dns_records(ls_names, txn)
+        elif not (original_network or {}).get(
+                ni_dns_apidef.INTERNAL_DNS_ENABLED, False):
+            self._restore_dns_records(context, network, ls_names, txn)
+
+    def _remove_dns_records(self, ls_names, txn):
+        for ls_name in ls_names:
+            _ls, ls_dns_record = self._nb_idl.get_ls_and_dns_record(ls_name)
+            if ls_dns_record is not None:
+                # NOTE: ovsdb-server keeps a weak reference to a deleted row
+                # when the row holding it was changed earlier in the same
+                # transaction, as the logical switch is on a network update.
+                txn.add(self._nb_idl.db_remove(
+                    'Logical_Switch', ls_name, 'dns_records',
+                    ls_dns_record.uuid, if_exists=True))
+                txn.add(self._nb_idl.dns_del(ls_dns_record.uuid))
+
+    def remove_network_dns_records(self, context, network):
+        """Remove the OVN DNS rows of a network, in all its switches."""
+        with self._nb_idl.transaction(check_error=True) as txn:
+            self._remove_dns_records(
+                self._get_network_ls_names(context, network), txn)
+
+    def _get_network_ls_names(self, context, network):
+        if utils.network_needs_lswitch(context, network=network):
+            return [utils.ovn_name(network['id'])]
+        segments = segments_db.get_network_segments(context, network['id'])
+        return [utils.ovn_name(segment['id']) for segment in segments]
+
+    def _restore_dns_records(self, context, network, ls_names, txn):
+        records_by_ls = {}
+        needs_lswitch = utils.network_needs_lswitch(context, network=network)
+        ports = self._plugin.get_ports(context.elevated(), filters={
+            'network_id': [network['id']]})
+        for port in ports:
+            if port.get('device_owner', '').startswith(
+                    const.DEVICE_OWNER_FLOATINGIP):
+                continue
+            port = dict(port, network=network)
+            if not self.is_dns_required_for_port(port):
+                continue
+            ls_name = ls_names[0] if needs_lswitch else (
+                self._get_port_segment_ls_name(port))
+            if ls_name:
+                records_by_ls.setdefault(ls_name, {}).update(
+                    self.get_port_dns_records(port))
+
+        for ls_name, records in records_by_ls.items():
+            ls, ls_dns_record = self._nb_idl.get_ls_and_dns_record(ls_name)
+            if ls_dns_record is not None:
+                txn.add(self._nb_idl.dns_set_records(ls_dns_record.uuid,
+                                                     **records))
+            elif ls is not None:
+                columns = {'external_ids': {'ls_name': ls.name},
+                           'records': records}
+                if self._nb_idl.is_col_present('DNS', 'options'):
+                    columns['options'] = {ovn_const.OVN_OWNED: (
+                        'true' if ovn_conf.is_dns_records_ovn_owned()
+                        else 'false')}
+                dns_add_txn = txn.add(self._nb_idl.dns_add(**columns))
+                txn.add(self._nb_idl.ls_set_dns_records(ls.uuid, dns_add_txn))
+
+    def _get_port_segment_ls_name(self, port):
+        ovn_port = self._nb_idl.lookup('Logical_Switch_Port', port['id'],
+                                       default=None)
+        segment_id = ovn_port.external_ids.get(
+            ovn_const.OVN_PORT_SEGMENT_EXT_ID_KEY) if ovn_port else None
+        return utils.ovn_name(segment_id) if segment_id else None
 
     def get_port_dns_records(self, port):
         port_dns_records = {}

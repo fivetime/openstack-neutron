@@ -15,6 +15,7 @@
 import collections
 from unittest import mock
 
+from neutron_lib.api.definitions import network_internal_dns as ni_dns
 from neutron_lib.api.definitions import portbindings
 from neutron_lib import constants as const
 from neutron_lib import exceptions as n_exc
@@ -24,11 +25,13 @@ from oslo_utils import uuidutils
 
 from neutron.common.ovn import acl
 from neutron.common.ovn import constants as ovn_const
+from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf
 from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb import impl_idl_ovn
 from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb import ovn_client
 from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb import ovn_db_sync
 from neutron.services.ovn_l3 import plugin as ovn_plugin
 from neutron.services.pvlan.drivers.ovn import driver as pvlan_ovn
+from neutron.tests import base
 from neutron.tests.unit import fake_resources as fakes
 from neutron.tests.unit.plugins.ml2.drivers.ovn.mech_driver import \
     test_mech_driver
@@ -1847,3 +1850,49 @@ class TestSyncPVLAN(test_mech_driver.OVNMechanismDriverTestCase):
                 '_sanitize_pvlan_network') as m:
             self.synchronizer.sync_pvlan(self.ctx)
             self.assertEqual(2, m.call_count)
+
+
+class TestSyncPortDnsRecords(base.BaseTestCase):
+
+    def setUp(self):
+        ovn_conf.register_opts()
+        super().setUp()
+        self.synchronizer = object.__new__(ovn_db_sync.OvnNbSynchronizer)
+        self.synchronizer.core_plugin = mock.MagicMock()
+        self.synchronizer.ovn_nb_api = mock.MagicMock()
+        self.synchronizer._ovn_client = mock.MagicMock()
+        self.synchronizer.mode = n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR
+        self.client = self.synchronizer._ovn_client
+        self.client.is_dns_required_for_port.return_value = True
+        self.client.get_port_dns_records.return_value = {'vm': '10.0.0.5'}
+        self.ctx = mock.MagicMock()
+        self.enabled_net = {'id': 'net-1', ni_dns.INTERNAL_DNS_ENABLED: True}
+        self.disabled_net = {'id': 'net-2',
+                             ni_dns.INTERNAL_DNS_ENABLED: False}
+        self.no_ext_net = {'id': 'net-3'}
+        self.synchronizer.core_plugin.get_networks.return_value = [
+            self.enabled_net, self.disabled_net, self.no_ext_net]
+        self.synchronizer.core_plugin.get_ports.return_value = [
+            {'id': 'port-1', 'network_id': 'net-1', 'device_owner': ''},
+            {'id': 'port-2', 'network_id': 'net-2', 'device_owner': ''},
+            {'id': 'port-3', 'network_id': 'net-3', 'device_owner': ''}]
+
+    def test_disabled_network_is_not_written_back_and_cleaned(self):
+        with mock.patch.object(self.synchronizer,
+                               '_set_dns_records') as mock_set:
+            self.synchronizer.sync_port_dns_records(self.ctx)
+
+        self.assertCountEqual(
+            ['net-1', 'net-3'],
+            [call.args[0] for call in mock_set.call_args_list])
+        self.client.remove_network_dns_records.assert_called_once_with(
+            self.ctx, self.disabled_net)
+
+    def test_log_mode_does_not_change_anything(self):
+        self.synchronizer.mode = n_lib_ovn_const.OVN_DB_SYNC_MODE_LOG
+        with mock.patch.object(self.synchronizer,
+                               '_set_dns_records') as mock_set:
+            self.synchronizer.sync_port_dns_records(self.ctx)
+
+        mock_set.assert_not_called()
+        self.client.remove_network_dns_records.assert_not_called()

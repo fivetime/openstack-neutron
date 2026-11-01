@@ -12,6 +12,7 @@
 
 from datetime import datetime
 
+from neutron_lib.api.definitions import network_internal_dns as ni_dns_apidef
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.api.definitions import segment as segment_def
 from neutron_lib import constants
@@ -1639,8 +1640,16 @@ class OvnNbSynchronizer(db_sync_base.BaseOvnDbSynchronizer):
                     self.core_plugin.get_ports(ctx) if not
                     port.get('device_owner', '').startswith(
                         constants.DEVICE_OWNER_FLOATINGIP)]
+        # NOTE: the records of a network with the internal DNS resolution
+        # disabled must not be written back, and any leftover must go.
+        disabled_networks = {
+            network['id']: network
+            for network in self.core_plugin.get_networks(ctx)
+            if not network.get(ni_dns_apidef.INTERNAL_DNS_ENABLED, True)}
         dns_records = {}
         for port in db_ports:
+            if port['network_id'] in disabled_networks:
+                continue
             if self._ovn_client.is_dns_required_for_port(port):
                 port_dns_records = self._ovn_client.get_port_dns_records(port)
                 if port['network_id'] not in dns_records:
@@ -1649,6 +1658,9 @@ class OvnNbSynchronizer(db_sync_base.BaseOvnDbSynchronizer):
 
         for network_id, port_dns_records in dns_records.items():
             self._set_dns_records(network_id, port_dns_records)
+
+        for network in disabled_networks.values():
+            self._ovn_client.remove_network_dns_records(ctx, network)
 
         LOG.debug('OVN-NB Sync port DNS records completed @ %s',
                   str(datetime.now()))

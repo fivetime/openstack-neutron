@@ -16,6 +16,7 @@
 from unittest import mock
 
 from neutron_lib.api.definitions import l3
+from neutron_lib.api.definitions import network_internal_dns as ni_dns
 from neutron_lib import constants as const
 from neutron_lib import context as ncontext
 from neutron_lib import exceptions as n_exc
@@ -28,6 +29,7 @@ from neutron.common.ovn import utils as ovn_utils
 from neutron.conf.plugins.ml2 import config as ml2_conf
 from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf
 from neutron.db import ovn_revision_numbers_db as db_rev
+from neutron.objects import network_internal_dns as ni_dns_obj
 from neutron.plugins.ml2 import db as ml2_db
 from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb import ovn_client
 from neutron.tests import base
@@ -105,6 +107,154 @@ class TestOVNClient(TestOVNClientBase):
         # Disable tenacity wait for UT
         self.ovn_client._wait_for_active_port_bindings_host.retry.wait = (
             wait_none())
+
+    def _dns_port(self, **kwargs):
+        port = {'id': 'port-1', 'network_id': 'net-1', 'dns_name': 'vm1',
+                'device_id': 'dev-1', 'device_owner': 'compute:nova',
+                'fixed_ips': [],
+                'dns_assignment': [{'hostname': 'vm1', 'fqdn': 'vm1.test.',
+                                    'ip_address': '10.0.0.5'}]}
+        port.update(kwargs)
+        return port
+
+    def test_is_dns_required_for_port_network_enabled(self):
+        port = self._dns_port(network={ni_dns.INTERNAL_DNS_ENABLED: True})
+        self.assertTrue(self.ovn_client.is_dns_required_for_port(port))
+
+    def test_is_dns_required_for_port_network_disabled(self):
+        port = self._dns_port(network={ni_dns.INTERNAL_DNS_ENABLED: False})
+        self.assertFalse(self.ovn_client.is_dns_required_for_port(port))
+
+    def test_is_dns_required_for_port_extension_not_loaded(self):
+        self.get_plugin.return_value.supported_extension_aliases = []
+        with mock.patch.object(ni_dns_obj.NetworkInternalDns,
+                               'get_object') as mock_get:
+            self.assertTrue(
+                self.ovn_client.is_dns_required_for_port(self._dns_port()))
+        mock_get.assert_not_called()
+
+    def _test_is_dns_required_for_port_from_db(self, db_row, expected):
+        self.get_plugin.return_value.supported_extension_aliases = [
+            ni_dns.ALIAS]
+        with mock.patch.object(ni_dns_obj.NetworkInternalDns, 'get_object',
+                               return_value=db_row):
+            self.assertEqual(
+                expected,
+                self.ovn_client.is_dns_required_for_port(self._dns_port()))
+
+    def test_is_dns_required_for_port_from_db_no_row(self):
+        self._test_is_dns_required_for_port_from_db(None, True)
+
+    def test_is_dns_required_for_port_from_db_disabled(self):
+        self._test_is_dns_required_for_port_from_db(
+            mock.Mock(enabled=False), False)
+
+    def test_is_dns_required_for_port_from_db_enabled(self):
+        self._test_is_dns_required_for_port_from_db(
+            mock.Mock(enabled=True), True)
+
+    def _sync_internal_dns(self, network, original_network):
+        txn = mock.MagicMock()
+        self.ovn_client._sync_network_internal_dns(
+            mock.MagicMock(), network, original_network, txn, ['neutron-net'])
+        return txn
+
+    def test_sync_internal_dns_extension_not_loaded(self):
+        self._sync_internal_dns({'id': 'net-1'}, {'id': 'net-1'})
+        self.nb_idl.get_ls_and_dns_record.assert_not_called()
+
+    def test_sync_internal_dns_disable_removes_the_row(self):
+        row = mock.Mock(uuid='dns-uuid')
+        self.nb_idl.get_ls_and_dns_record.return_value = (mock.Mock(), row)
+        self._sync_internal_dns(
+            {'id': 'net-1', ni_dns.INTERNAL_DNS_ENABLED: False},
+            {'id': 'net-1', ni_dns.INTERNAL_DNS_ENABLED: True})
+        self.nb_idl.db_remove.assert_called_once_with(
+            'Logical_Switch', mock.ANY, 'dns_records', 'dns-uuid',
+            if_exists=True)
+        self.nb_idl.dns_del.assert_called_once_with('dns-uuid')
+
+    def test_sync_internal_dns_disabled_without_row(self):
+        self.nb_idl.get_ls_and_dns_record.return_value = (mock.Mock(), None)
+        self._sync_internal_dns(
+            {'id': 'net-1', ni_dns.INTERNAL_DNS_ENABLED: False}, None)
+        self.nb_idl.dns_del.assert_not_called()
+
+    def test_sync_internal_dns_stays_enabled(self):
+        self._sync_internal_dns(
+            {'id': 'net-1', ni_dns.INTERNAL_DNS_ENABLED: True},
+            {'id': 'net-1', ni_dns.INTERNAL_DNS_ENABLED: True})
+        self.nb_idl.get_ls_and_dns_record.assert_not_called()
+        self.get_plugin.return_value.get_ports.assert_not_called()
+
+    @mock.patch.object(ovn_utils, 'network_needs_lswitch', return_value=True)
+    def test_sync_internal_dns_enable_restores_records(self, *args):
+        network = {'id': 'net-1', 'dns_domain': '',
+                   ni_dns.INTERNAL_DNS_ENABLED: True}
+        vm2 = self._dns_port(
+            id='port-2', dns_name='vm2',
+            dns_assignment=[{'hostname': 'vm2', 'fqdn': 'vm2.test.',
+                             'ip_address': '10.0.0.6'}])
+        self.get_plugin.return_value.get_ports.return_value = [
+            self._dns_port(), vm2,
+            self._dns_port(id='port-3', dns_name=''),
+            self._dns_port(id='port-4', device_id=''),
+            self._dns_port(id='fip', dns_name='fip',
+                           device_owner=const.DEVICE_OWNER_FLOATINGIP)]
+        ls = mock.Mock()
+        ls.name = 'neutron-net'
+        self.nb_idl.get_ls_and_dns_record.return_value = (ls, None)
+        txn = self._sync_internal_dns(
+            network, {'id': 'net-1', ni_dns.INTERNAL_DNS_ENABLED: False})
+
+        # The records of all the ports go into a single DNS row.
+        self.nb_idl.dns_add.assert_called_once()
+        records = self.nb_idl.dns_add.call_args.kwargs['records']
+        self.assertEqual('10.0.0.5', records['vm1'])
+        self.assertEqual('10.0.0.6', records['vm2'])
+        self.assertNotIn('fip', records)
+        self.assertEqual(
+            {'ls_name': 'neutron-net'},
+            self.nb_idl.dns_add.call_args.kwargs['external_ids'])
+        self.nb_idl.ls_set_dns_records.assert_called_once_with(
+            ls.uuid, txn.add.return_value)
+        self.nb_idl.dns_set_records.assert_not_called()
+
+    @mock.patch.object(ovn_utils, 'network_needs_lswitch', return_value=True)
+    def test_sync_internal_dns_enable_existing_row(self, *args):
+        self.get_plugin.return_value.get_ports.return_value = [
+            self._dns_port()]
+        row = mock.Mock(uuid='dns-uuid')
+        self.nb_idl.get_ls_and_dns_record.return_value = (mock.Mock(), row)
+        self._sync_internal_dns(
+            {'id': 'net-1', ni_dns.INTERNAL_DNS_ENABLED: True}, None)
+        self.nb_idl.dns_add.assert_not_called()
+        self.nb_idl.dns_set_records.assert_called_once()
+        self.assertEqual('dns-uuid',
+                         self.nb_idl.dns_set_records.call_args.args[0])
+
+    @mock.patch.object(ovn_utils, 'network_needs_lswitch', return_value=False)
+    def test_sync_internal_dns_enable_routed_network(self, *args):
+        self.get_plugin.return_value.get_ports.return_value = [
+            self._dns_port()]
+        self.nb_idl.lookup.return_value = mock.Mock(external_ids={
+            constants.OVN_PORT_SEGMENT_EXT_ID_KEY: 'seg-1'})
+        self.nb_idl.get_ls_and_dns_record.return_value = (mock.Mock(), None)
+        self._sync_internal_dns(
+            {'id': 'net-1', ni_dns.INTERNAL_DNS_ENABLED: True},
+            {'id': 'net-1', ni_dns.INTERNAL_DNS_ENABLED: False})
+        self.nb_idl.get_ls_and_dns_record.assert_called_once_with(
+            ovn_utils.ovn_name('seg-1'))
+
+    @mock.patch.object(ovn_utils, 'network_needs_lswitch', return_value=False)
+    @mock.patch.object(ovn_client.segments_db, 'get_network_segments',
+                       return_value=[{'id': 'seg-1'}, {'id': 'seg-2'}])
+    def test_remove_network_dns_records_routed_network(self, *args):
+        row = mock.Mock(uuid='dns-uuid')
+        self.nb_idl.get_ls_and_dns_record.return_value = (mock.Mock(), row)
+        self.ovn_client.remove_network_dns_records(
+            mock.MagicMock(), {'id': 'net-1'})
+        self.assertEqual(2, self.nb_idl.dns_del.call_count)
 
     def test__add_router_ext_gw_default_route(self):
         plugin = mock.MagicMock()
@@ -1336,7 +1486,7 @@ class TestOVNClient(TestOVNClientBase):
                  '_update_network_regular') as mock_regular:
             self.ovn_client.update_network(ctx, network)
 
-        mock_vlan.assert_called_once_with(ctx, network, segments)
+        mock_vlan.assert_called_once_with(ctx, network, segments, None)
         mock_regular.assert_not_called()
 
     @mock.patch.object(ovn_utils, 'network_needs_lswitch',

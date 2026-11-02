@@ -55,6 +55,7 @@ from neutron._i18n import _
 from neutron.common.ovn import acl as ovn_acl
 from neutron.common.ovn import constants as ovn_const
 from neutron.common.ovn import utils
+from neutron.common import ipv6_utils
 from neutron.common import utils as common_utils
 from neutron.conf.agent import ovs_conf
 from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf
@@ -2998,7 +2999,9 @@ class OVNClient:
     def create_subnet(self, context, subnet, network):
         if subnet['enable_dhcp']:
             mport_updated = False
-            if subnet['ip_version'] == const.IP_VERSION_4:
+            # NOTE: the addresses of the auto address subnets are allocated
+            # to all the ports of the network when the subnet is created.
+            if not ipv6_utils.is_auto_address_subnet(subnet):
                 mport_updated = self.update_metadata_port(
                     context, network, subnet=subnet)
             if subnet['ip_version'] == const.IP_VERSION_6 or not mport_updated:
@@ -3252,7 +3255,9 @@ class OVNClient:
         """Update metadata port.
 
         This function will allocate an IP address for the metadata port of
-        the given network in all its IPv4 subnets or the given subnet. Returns
+        the given network in all its subnets with DHCP enabled, except the
+        auto address ones as their addresses are not requested by subnet, or
+        in the given subnet. Returns
         "True" if the metadata port has been updated and "False" if OVN
         metadata is disabled or the metadata port does not exist or
         cannot be created.
@@ -3307,11 +3312,13 @@ class OVNClient:
 
         # Retrieve all subnets in this network
         subnets = self._plugin.get_subnets(
-            context, filters={'network_id': [network_id],
-                              'ip_version': [const.IP_VERSION_4],
-                              'enable_dhcp': [True]})
+            context, filters={'network_id': [network_id]})
 
-        subnet_ids = {s['id'] for s in subnets}
+        auto_subnet_ids = {s['id'] for s in subnets if
+                           ipv6_utils.is_auto_address_subnet(s)}
+        port_subnet_ids -= auto_subnet_ids
+        subnet_ids = {s['id'] for s in subnets if s['enable_dhcp'] and
+                      s['id'] not in auto_subnet_ids}
 
         # Find all subnets where metadata port doesn't have an IP in and
         # allocate one.

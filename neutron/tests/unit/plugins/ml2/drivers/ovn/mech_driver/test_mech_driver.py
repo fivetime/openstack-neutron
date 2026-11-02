@@ -2514,8 +2514,11 @@ class TestOVNMechanismDriver(TestOVNMechanismDriverBase):
                 mock.patch.object(self.mech_driver._plugin, 'update_port') as \
                 mock_update_port:
             # Port with IP in subnet1; subnet1 and subnet2 with DHCP.
-            mock_get_subnets.return_value = [{'id': 'subnet1'},
-                                             {'id': 'subnet2'}]
+            mock_get_subnets.return_value = [
+                {'id': 'subnet1', 'enable_dhcp': True,
+                 'ipv6_address_mode': None, 'ipv6_ra_mode': None},
+                {'id': 'subnet2', 'enable_dhcp': True,
+                 'ipv6_address_mode': None, 'ipv6_ra_mode': None}]
             fixed_ips = [{'subnet_id': 'subnet1', 'ip_address': 'ip_add1'}]
             network = {'id': 'net_id'}
             mock_metaport.return_value = {'fixed_ips': fixed_ips,
@@ -2530,7 +2533,11 @@ class TestOVNMechanismDriver(TestOVNMechanismDriverBase):
             mock_update_port.reset_mock()
 
             # Port with IP in subnet1; subnet1 with DHCP, subnet2 without DHCP.
-            mock_get_subnets.return_value = [{'id': 'subnet1'}]
+            mock_get_subnets.return_value = [
+                {'id': 'subnet1', 'enable_dhcp': True,
+                 'ipv6_address_mode': None, 'ipv6_ra_mode': None},
+                {'id': 'subnet2', 'enable_dhcp': False,
+                 'ipv6_address_mode': None, 'ipv6_ra_mode': None}]
             fixed_ips = [{'subnet_id': 'subnet1', 'ip_address': 'ip_add1'}]
             network = {'id': 'net_id'}
             mock_metaport.return_value = {'fixed_ips': fixed_ips,
@@ -2540,7 +2547,9 @@ class TestOVNMechanismDriver(TestOVNMechanismDriverBase):
             mock_update_port.assert_not_called()
 
             # Port with IP in subnet1; subnet1 without DHCP.
-            mock_get_subnets.return_value = []
+            mock_get_subnets.return_value = [
+                {'id': 'subnet1', 'enable_dhcp': False,
+                 'ipv6_address_mode': None, 'ipv6_ra_mode': None}]
             fixed_ips = [{'subnet_id': 'subnet1', 'ip_address': 'ip_add1'}]
             mock_metaport.return_value = {'fixed_ips': fixed_ips,
                                           'id': 'metadata_id'}
@@ -2551,6 +2560,29 @@ class TestOVNMechanismDriver(TestOVNMechanismDriverBase):
             mock_update_port.assert_called_once_with(
                 mock.ANY, 'metadata_id', port)
             mock_update_port.reset_mock()
+
+    def test_update_metadata_port_no_subnet_auto_address(self):
+        """The addresses of the auto address subnets are left to the IPAM."""
+        ovn_conf.cfg.CONF.set_override('ovn_metadata_enabled', True,
+                                       group='ovn')
+        with mock.patch.object(
+                self.mech_driver._ovn_client, '_find_metadata_port') as \
+                mock_metaport, \
+                mock.patch.object(self.mech_driver._plugin, 'get_subnets') as \
+                mock_get_subnets, \
+                mock.patch.object(self.mech_driver._plugin, 'update_port') as \
+                mock_update_port:
+            for mode in (const.IPV6_SLAAC, const.DHCPV6_STATELESS):
+                mock_get_subnets.return_value = [
+                    {'id': 'subnet1', 'enable_dhcp': True,
+                     'ipv6_address_mode': mode, 'ipv6_ra_mode': mode}]
+                for fixed_ips in ([], [{'subnet_id': 'subnet1',
+                                        'ip_address': 'ip_add1'}]):
+                    mock_metaport.return_value = {'fixed_ips': fixed_ips,
+                                                  'id': 'metadata_id'}
+                    self.mech_driver._ovn_client.update_metadata_port(
+                        self.context, {'id': 'net_id'})
+                    mock_update_port.assert_not_called()
 
     def test_update_metadata_port_no_port(self):
         ovn_conf.cfg.CONF.set_override('ovn_metadata_enabled', True,

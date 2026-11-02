@@ -1,0 +1,9 @@
+---
+fixes:
+  - |
+    [OVN] The metadata port now gets an IP address on the IPv6 subnets with
+    DHCP enabled that are not in an auto address mode, such as the
+    ``dhcpv6-stateful`` ones, as it does on the IPv4 subnets. Before, the OVN
+    database synchronization removed any such address. In ``repair`` mode, the
+    synchronization allocates the address on the existing networks, which
+    takes one address from the allocation pool of each of these subnets.

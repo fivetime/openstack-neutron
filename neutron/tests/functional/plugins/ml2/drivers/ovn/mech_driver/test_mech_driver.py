@@ -1288,11 +1288,11 @@ class TestMetadataPorts(base.TestOVNFunctionalBase):
         self.n1 = self._make_network(self.fmt, 'n1', True)
         self.n1_id = self.n1['network']['id']
 
-    def _create_subnet_ovn(self, cidr, enable_dhcp=True):
+    def _create_subnet_ovn(self, cidr, enable_dhcp=True, **kwargs):
         _cidr = netaddr.IPNetwork(cidr)
         res = self._create_subnet(self.fmt, self.n1_id, cidr,
                                   enable_dhcp=enable_dhcp,
-                                  ip_version=_cidr.version)
+                                  ip_version=_cidr.version, **kwargs)
         return self.deserialize(self.fmt, res)['subnet']
 
     def _list_ports_ovn(self, net_id=None):
@@ -1384,12 +1384,78 @@ class TestMetadataPorts(base.TestOVNFunctionalBase):
                                                           '10.0.0.0/24'))
         self.assertEqual([], self._list_ports_ovn(self.n1_id))
 
-    def test_subnet_ipv6(self):
+    def _get_metadata_port_ips(self, subnet_id):
+        for port in self._list_ports_ovn(net_id=self.n1_id):
+            if utils.is_ovn_metadata_port(port):
+                return [ip['ip_address'] for ip in port['fixed_ips']
+                        if ip['subnet_id'] == subnet_id]
+        self.fail('Metadata port is not present in network %s' % self.n1_id)
+
+    def _test_subnet_ipv6_allocated_by_subnet(self, **kwargs):
         self._create_network_ovn(metadata_enabled=True)
-        subnet = self._create_subnet_ovn('2001:db8::/64')
+        subnet = self._create_subnet_ovn('2001:db8::/64', **kwargs)
         self.assertIsNone(self._check_subnet_dhcp_options(subnet['id'],
                                                           '2001:db8::/64'))
-        self._check_metadata_port(self.n1_id, [])
+        ips = self._get_metadata_port_ips(subnet['id'])
+        self.assertEqual(1, len(ips))
+        self.assertIn(netaddr.IPAddress(ips[0]),
+                      netaddr.IPNetwork(subnet['cidr']))
+
+        # The periodic synchronization keeps the address
+        self._ovn_client.update_metadata_port(self.context,
+                                              self.n1['network'])
+        self.assertEqual(ips, self._get_metadata_port_ips(subnet['id']))
+
+    def test_subnet_ipv6(self):
+        self._test_subnet_ipv6_allocated_by_subnet()
+
+    def test_subnet_ipv6_stateful(self):
+        self._test_subnet_ipv6_allocated_by_subnet(
+            ipv6_ra_mode=constants.DHCPV6_STATEFUL,
+            ipv6_address_mode=constants.DHCPV6_STATEFUL)
+
+    def test_subnet_ipv6_slaac(self):
+        self._create_network_ovn(metadata_enabled=True)
+        subnet = self._create_subnet_ovn(
+            '2001:db8::/64',
+            ipv6_ra_mode=constants.IPV6_SLAAC,
+            ipv6_address_mode=constants.IPV6_SLAAC)
+        ips = self._get_metadata_port_ips(subnet['id'])
+        self.assertEqual(1, len(ips))
+        self._ovn_client.update_metadata_port(self.context,
+                                              self.n1['network'])
+        self.assertEqual(ips, self._get_metadata_port_ips(subnet['id']))
+
+    def test_subnet_ipv6_stateful_existing_metadata_port(self):
+        """The synchronization allocates the address on existing networks."""
+        self._create_network_ovn(metadata_enabled=True)
+        subnet = self._create_subnet_ovn(
+            '2001:db8::/64',
+            ipv6_ra_mode=constants.DHCPV6_STATEFUL,
+            ipv6_address_mode=constants.DHCPV6_STATEFUL)
+        port_id = self._check_metadata_port(
+            self.n1_id,
+            {'subnet_id': subnet['id'],
+             'ip_address': self._get_metadata_port_ips(subnet['id'])[0]})
+        data = {'port': {'fixed_ips': []}}
+        req = self.new_update_request('ports', data, port_id)
+        req.get_response(self.api)
+        self.assertEqual([], self._get_metadata_port_ips(subnet['id']))
+
+        self._ovn_client.update_metadata_port(self.context,
+                                              self.n1['network'])
+        self.assertEqual(1, len(self._get_metadata_port_ips(subnet['id'])))
+
+    def test_subnet_ipv6_stateful_deleted(self):
+        """The address does not block the deletion of the subnet."""
+        self._create_network_ovn(metadata_enabled=True)
+        subnet = self._create_subnet_ovn(
+            '2001:db8::/64',
+            ipv6_ra_mode=constants.DHCPV6_STATEFUL,
+            ipv6_address_mode=constants.DHCPV6_STATEFUL)
+        req = self.new_delete_request('subnets', subnet['id'])
+        self.assertEqual(204, req.get_response(self.api).status_int)
+        self.assertEqual([], self._get_metadata_port_ips(subnet['id']))
 
 
 class AgentWaitEvent(event.WaitEvent):

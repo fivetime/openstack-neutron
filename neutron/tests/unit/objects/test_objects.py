@@ -68,6 +68,7 @@ object_data = {
     'NetworkDhcpAgentBinding': '1.1-d9443c88809ffa4c45a0a5a48134b54a',
     'NetworkDNSDomain': '1.0-420db7910294608534c1e2e30d6d8319',
     'NetworkInternalDns': '1.0-9edb10580f4ac0f8820c15ea0b2365e8',
+    'NetworkMetadataStatefulIpv6': '1.0-9edb10580f4ac0f8820c15ea0b2365e8',
     'NetworkPortSecurity': '1.0-b30802391a87945ee9c07582b4ff95e3',
     'NetworkPVLAN': '1.0-03f233ead47f71af1eca97971c84fc7d',
     'NetworkRBAC': '1.3-be82ed54376b85ee4f963d479ac48c91',

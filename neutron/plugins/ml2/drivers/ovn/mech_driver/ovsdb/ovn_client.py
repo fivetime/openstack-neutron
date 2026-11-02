@@ -23,6 +23,8 @@ import netaddr
 from neutron_lib.api.definitions import l3
 from neutron_lib.api.definitions import l3_ext_gw_multihoming
 from neutron_lib.api.definitions import network_internal_dns as ni_dns_apidef
+from neutron_lib.api.definitions import network_metadata_stateful_ipv6 as \
+    md_ipv6_apidef
 from neutron_lib.api.definitions import port_security as psec
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.api.definitions import provider_net as pnet
@@ -54,6 +56,7 @@ from ovsdbapp.backend.ovs_idl import idlutils
 import tenacity
 
 from neutron._i18n import _
+from neutron.common import ipv6_utils
 from neutron.common.ovn import acl as ovn_acl
 from neutron.common.ovn import constants as ovn_const
 from neutron.common.ovn import utils
@@ -65,6 +68,7 @@ from neutron.conf.plugins.ml2.drivers.ovn.ovn_conf \
 from neutron.db import ovn_revision_numbers_db as db_rev
 from neutron.db import segments_db
 from neutron.objects import network_internal_dns as ni_dns_obj
+from neutron.objects import network_metadata_stateful_ipv6 as md_ipv6_obj
 from neutron.objects import router
 from neutron.plugins.ml2 import db as ml2_db
 from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb.extensions \
@@ -2587,6 +2591,7 @@ class OVNClient:
             # Regular/mixed networks: Use existing behavior
             self._update_network_regular(context, network, original_network,
                                          segments)
+        self._sync_metadata_stateful_ipv6(context, network, original_network)
 
     def update_network_vlan_segments(self, context, network, segments,
                                      original_network=None):
@@ -3010,7 +3015,7 @@ class OVNClient:
     def create_subnet(self, context, subnet, network):
         if subnet['enable_dhcp']:
             mport_updated = False
-            if subnet['ip_version'] == const.IP_VERSION_4:
+            if self._metadata_port_needs_ip(context, subnet, network):
                 mport_updated = self.update_metadata_port(
                     context, network, subnet=subnet)
             if subnet['ip_version'] == const.IP_VERSION_6 or not mport_updated:
@@ -3218,6 +3223,42 @@ class OVNClient:
                 if fixed_ip['subnet_id'] == subnet['id']:
                     return fixed_ip['ip_address']
 
+    def _is_metadata_stateful_ipv6_enabled(self, context, network):
+        if md_ipv6_apidef.METADATA_STATEFUL_IPV6_ADDRESS in network:
+            return network[md_ipv6_apidef.METADATA_STATEFUL_IPV6_ADDRESS]
+
+        # The network was not retrieved with its extended attributes.
+        if not extensions.is_extension_supported(self._plugin,
+                                                 md_ipv6_apidef.ALIAS):
+            return False
+        stateful_ipv6 = md_ipv6_obj.NetworkMetadataStatefulIpv6.get_object(
+            context.elevated(), network_id=network['id'])
+        return stateful_ipv6.enabled if stateful_ipv6 else False
+
+    def _metadata_port_needs_ip(self, context, subnet, network):
+        """Check if the metadata port requests an address in a subnet.
+
+        The addresses of the auto address subnets are not requested: the IPAM
+        assigns them to all the ports of the network.
+        """
+        if not subnet['enable_dhcp'] or ipv6_utils.is_auto_address_subnet(
+                subnet):
+            return False
+        return (subnet['ip_version'] == const.IP_VERSION_4 or
+                self._is_metadata_stateful_ipv6_enabled(context, network))
+
+    def _sync_metadata_stateful_ipv6(self, context, network,
+                                     original_network):
+        attr = md_ipv6_apidef.METADATA_STATEFUL_IPV6_ADDRESS
+        if (attr not in network or original_network is None or
+                bool(original_network.get(attr)) == bool(network[attr])):
+            return
+
+        for subnet in self._plugin.get_subnets_by_network(context,
+                                                          network['id']):
+            if subnet['ip_version'] == const.IP_VERSION_6:
+                self.update_metadata_port(context, network, subnet=subnet)
+
     def create_metadata_port(self, context, network, segment_id=None):
         if not ovn_conf.is_ovn_metadata_enabled():
             return
@@ -3241,8 +3282,8 @@ class OVNClient:
             # Regular/mixed networks: Include all DHCP-enabled subnets
             filters = {'network_id': [net_id]}
             subnets = self._plugin.get_subnets(context, filters=filters)
-            fixed_ips = [{'subnet_id': s['id']}
-                         for s in subnets if s['enable_dhcp']]
+            fixed_ips = [{'subnet_id': s['id']} for s in subnets
+                         if self._metadata_port_needs_ip(context, s, network)]
 
         port = {'port': {'network_id': net_id,
                          'project_id': network['project_id'],
@@ -3264,7 +3305,9 @@ class OVNClient:
         """Update metadata port.
 
         This function will allocate an IP address for the metadata port of
-        the given network in all its IPv4 subnets or the given subnet. Returns
+        the given network in all the subnets needing one, see
+        ``_metadata_port_needs_ip``, or in the given subnet if it needs one,
+        and release the addresses of the subnets not needing one. Returns
         "True" if the metadata port has been updated and "False" if OVN
         metadata is disabled or the metadata port does not exist or
         cannot be created.
@@ -3309,21 +3352,32 @@ class OVNClient:
         # only the fixed IP address from this subnet should be updated in the
         # metadata port.
         if subnet and subnet['id']:
-            if subnet['enable_dhcp'] and subnet['id'] not in port_subnet_ids:
-                update_metadata_port_fixed_ips(metadata_port,
-                                               [subnet['id']], [])
-            elif not subnet['enable_dhcp'] and subnet['id'] in port_subnet_ids:
+            needs_ip = self._metadata_port_needs_ip(context, subnet, network)
+            if needs_ip and subnet['id'] not in port_subnet_ids:
+                try:
+                    update_metadata_port_fixed_ips(metadata_port,
+                                                   [subnet['id']], [])
+                except n_exc.IpAddressGenerationFailure:
+                    if subnet['ip_version'] == const.IP_VERSION_4:
+                        raise
+                    # The DB synchronization, in repair mode, tries again.
+                    LOG.error('Could not allocate IP address for metadata '
+                              'port in subnet %s', subnet['id'])
+                    return False
+            elif (not needs_ip and subnet['id'] in port_subnet_ids and
+                    not ipv6_utils.is_auto_address_subnet(subnet)):
                 update_metadata_port_fixed_ips(metadata_port,
                                                [], [subnet['id']])
             return True
 
         # Retrieve all subnets in this network
         subnets = self._plugin.get_subnets(
-            context, filters={'network_id': [network_id],
-                              'ip_version': [const.IP_VERSION_4],
-                              'enable_dhcp': [True]})
+            context, filters={'network_id': [network_id]})
 
-        subnet_ids = {s['id'] for s in subnets}
+        port_subnet_ids -= {s['id'] for s in subnets if
+                            ipv6_utils.is_auto_address_subnet(s)}
+        subnet_ids = {s['id'] for s in subnets if
+                      self._metadata_port_needs_ip(context, s, network)}
 
         # Find all subnets where metadata port doesn't have an IP in and
         # allocate one.

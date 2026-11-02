@@ -59,6 +59,7 @@ from neutron_lib.api.definitions import network_availability_zone
 from neutron_lib.api.definitions import network_ha
 from neutron_lib.api.definitions import network_internal_dns
 from neutron_lib.api.definitions import network_ip_availability
+from neutron_lib.api.definitions import network_metadata_stateful_ipv6
 from neutron_lib.api.definitions import network_mtu
 from neutron_lib.api.definitions import network_mtu_writable
 from neutron_lib.api.definitions import network_segment_range
@@ -176,6 +177,7 @@ ML2_SUPPORTED_API_EXTENSIONS = [
     multiprovidernet.ALIAS,
     network_ha.ALIAS,
     network_internal_dns.ALIAS,
+    network_metadata_stateful_ipv6.ALIAS,
     network_mtu.ALIAS,
     network_mtu_writable.ALIAS,
     network_availability_zone.ALIAS,

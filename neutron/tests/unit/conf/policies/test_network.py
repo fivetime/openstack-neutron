@@ -83,6 +83,18 @@ class SystemAdminTests(NetworkAPITestCase):
             self.context, 'create_network:internal_dns_enabled',
             self.alt_target)
 
+    def test_create_network_metadata_stateful_ipv6_address(self):
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce,
+            self.context, 'create_network:metadata_stateful_ipv6_address',
+            self.target)
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce,
+            self.context, 'create_network:metadata_stateful_ipv6_address',
+            self.alt_target)
+
     def test_create_network_port_security_enabled(self):
         self.assertRaises(
             base_policy.InvalidScope,
@@ -312,6 +324,18 @@ class SystemAdminTests(NetworkAPITestCase):
             self.context, 'update_network:internal_dns_enabled',
             self.alt_target)
 
+    def test_update_network_metadata_stateful_ipv6_address(self):
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce,
+            self.context, 'update_network:metadata_stateful_ipv6_address',
+            self.target)
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce,
+            self.context, 'update_network:metadata_stateful_ipv6_address',
+            self.alt_target)
+
     def test_update_network_port_security_enabled(self):
         self.assertRaises(
             base_policy.InvalidScope,
@@ -408,6 +432,16 @@ class AdminTests(NetworkAPITestCase):
         self.assertTrue(
             policy.enforce(self.context,
                            'create_network:internal_dns_enabled',
+                           self.alt_target))
+
+    def test_create_network_metadata_stateful_ipv6_address(self):
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'create_network:metadata_stateful_ipv6_address',
+                           self.target))
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'create_network:metadata_stateful_ipv6_address',
                            self.alt_target))
 
     def test_create_network_port_security_enabled(self):
@@ -584,6 +618,16 @@ class AdminTests(NetworkAPITestCase):
                            'update_network:internal_dns_enabled',
                            self.alt_target))
 
+    def test_update_network_metadata_stateful_ipv6_address(self):
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'update_network:metadata_stateful_ipv6_address',
+                           self.target))
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'update_network:metadata_stateful_ipv6_address',
+                           self.alt_target))
+
     def test_update_network_port_security_enabled(self):
         self.assertTrue(
             policy.enforce(self.context,
@@ -668,6 +712,17 @@ class ProjectManagerTests(AdminTests):
             base_policy.PolicyNotAuthorized,
             policy.enforce,
             self.context, 'create_network:internal_dns_enabled',
+            self.alt_target)
+
+    def test_create_network_metadata_stateful_ipv6_address(self):
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'create_network:metadata_stateful_ipv6_address',
+                           self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_network:metadata_stateful_ipv6_address',
             self.alt_target)
 
     def test_create_network_port_security_enabled(self):
@@ -888,6 +943,17 @@ class ProjectManagerTests(AdminTests):
             self.context, 'update_network:internal_dns_enabled',
             self.alt_target)
 
+    def test_update_network_metadata_stateful_ipv6_address(self):
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'update_network:metadata_stateful_ipv6_address',
+                           self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_network:metadata_stateful_ipv6_address',
+            self.alt_target)
+
     def test_update_network_port_security_enabled(self):
         self.assertTrue(
             policy.enforce(self.context,
@@ -957,6 +1023,18 @@ class ProjectReaderTests(ProjectMemberTests):
             self.context, 'create_network:internal_dns_enabled',
             self.alt_target)
 
+    def test_create_network_metadata_stateful_ipv6_address(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_network:metadata_stateful_ipv6_address',
+            self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_network:metadata_stateful_ipv6_address',
+            self.alt_target)
+
     def test_create_network_port_security_enabled(self):
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
@@ -996,6 +1074,18 @@ class ProjectReaderTests(ProjectMemberTests):
             base_policy.PolicyNotAuthorized,
             policy.enforce,
             self.context, 'update_network:internal_dns_enabled',
+            self.alt_target)
+
+    def test_update_network_metadata_stateful_ipv6_address(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_network:metadata_stateful_ipv6_address',
+            self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_network:metadata_stateful_ipv6_address',
             self.alt_target)
 
     def test_update_network_port_security_enabled(self):
@@ -1071,6 +1161,13 @@ class ServiceRoleTests(NetworkAPITestCase):
             base_policy.PolicyNotAuthorized,
             policy.enforce,
             self.context, 'create_network:internal_dns_enabled',
+            self.target)
+
+    def test_create_network_metadata_stateful_ipv6_address(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_network:metadata_stateful_ipv6_address',
             self.target)
 
     def test_create_network_port_security_enabled(self):
@@ -1195,6 +1292,13 @@ class ServiceRoleTests(NetworkAPITestCase):
             base_policy.PolicyNotAuthorized,
             policy.enforce,
             self.context, 'update_network:internal_dns_enabled',
+            self.target)
+
+    def test_update_network_metadata_stateful_ipv6_address(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_network:metadata_stateful_ipv6_address',
             self.target)
 
     def test_update_network_port_security_enabled(self):

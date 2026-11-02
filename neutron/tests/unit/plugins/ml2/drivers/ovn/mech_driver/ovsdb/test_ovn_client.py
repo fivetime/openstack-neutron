@@ -1551,7 +1551,8 @@ class TestOVNClient(TestOVNClientBase):
         """update_metadata_port for VLAN-only uses segment_id."""
         network = self._make_network()
         subnet = {'id': 'sub-1', 'segment_id': 'seg-1',
-                  'enable_dhcp': True}
+                  'enable_dhcp': True, 'ip_version': 4,
+                  'ipv6_address_mode': None, 'ipv6_ra_mode': None}
         ctx = mock.MagicMock()
         cfg.CONF.set_override('ovn_metadata_enabled', True, group='ovn')
 
@@ -1575,7 +1576,8 @@ class TestOVNClient(TestOVNClientBase):
         """update_metadata_port for regular network uses no segment_id."""
         network = self._make_network()
         subnet = {'id': 'sub-1', 'segment_id': None,
-                  'enable_dhcp': True}
+                  'enable_dhcp': True, 'ip_version': 4,
+                  'ipv6_address_mode': None, 'ipv6_ra_mode': None}
         ctx = mock.MagicMock()
         cfg.CONF.set_override('ovn_metadata_enabled', True, group='ovn')
 
@@ -1629,7 +1631,8 @@ class TestOVNClient(TestOVNClientBase):
         cfg.CONF.set_override('ovn_metadata_enabled', True, group='ovn')
         plugin = self.get_plugin.return_value
         plugin.get_subnets.return_value = [
-            {'id': 'sub-1', 'enable_dhcp': True}]
+            {'id': 'sub-1', 'enable_dhcp': True, 'ip_version': 4,
+             'ipv6_address_mode': None, 'ipv6_ra_mode': None}]
 
         self.ovn_client._find_metadata_port = mock.Mock(return_value=None)
         new_port = {'id': 'new-meta-port', 'network_id': network['id']}
@@ -1692,9 +1695,11 @@ class TestOVNClient(TestOVNClientBase):
         plugin.get_network.return_value = {'id': net_id}
         # sub-1 matches seg-1, sub-2 belongs to seg-2
         sub1 = {'id': 'sub-1', 'segment_id': 'seg-1',
-                'enable_dhcp': True}
+                'enable_dhcp': True, 'ip_version': 4,
+                'ipv6_address_mode': None, 'ipv6_ra_mode': None}
         sub2 = {'id': 'sub-2', 'segment_id': 'seg-2',
-                'enable_dhcp': True}
+                'enable_dhcp': True, 'ip_version': 4,
+                'ipv6_address_mode': None, 'ipv6_ra_mode': None}
         plugin.get_subnets.return_value = [sub1, sub2]
 
         with mock.patch.object(

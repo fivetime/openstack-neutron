@@ -119,6 +119,16 @@ rules = [
         operations=ACTION_POST,
     ),
     policy.DocumentedRuleDefault(
+        name='create_network:metadata_stateful_ipv6_address',
+        check_str=lib_rules.ADMIN_OR_PROJECT_MEMBER,
+        scope_types=['project'],
+        description=(
+            'Specify ``metadata_stateful_ipv6_address`` '
+            'attribute when creating a network'
+        ),
+        operations=ACTION_POST,
+    ),
+    policy.DocumentedRuleDefault(
         name='create_network:port_security_enabled',
         check_str=lib_rules.ADMIN_OR_PROJECT_MEMBER,
         scope_types=['project'],
@@ -398,6 +408,16 @@ rules = [
         scope_types=['project'],
         description=(
             'Specify ``internal_dns_enabled`` '
+            'attribute when updating a network'
+        ),
+        operations=ACTION_PUT,
+    ),
+    policy.DocumentedRuleDefault(
+        name='update_network:metadata_stateful_ipv6_address',
+        check_str=lib_rules.ADMIN_OR_PROJECT_MEMBER,
+        scope_types=['project'],
+        description=(
+            'Specify ``metadata_stateful_ipv6_address`` '
             'attribute when updating a network'
         ),
         operations=ACTION_PUT,

@@ -1,0 +1,20 @@
+---
+features:
+  - |
+    [OVN] Added the ``network_metadata_stateful_ipv6`` ML2 extension driver and
+    the ``metadata_stateful_ipv6_address`` network attribute, ``False`` by
+    default. When it is ``True``, the metadata port gets an address on the IPv6
+    subnets with DHCP enabled whose addresses are not assigned automatically,
+    such as the ``dhcpv6-stateful`` ones, and the metadata namespace has that
+    address on the chassis with a VIF port on the subnet. Setting it back to
+    ``False`` releases the addresses. It takes one address from the allocation
+    pool of each of these subnets; if a pool is exhausted, the error is only
+    logged and the OVN database synchronization, in ``repair`` mode, tries
+    again. It cannot be enabled on an external network. The addresses on the
+    ``slaac`` and ``dhcpv6-stateless`` subnets are assigned by the IPAM to all
+    the ports and this attribute does not control them.
+fixes:
+  - |
+    [OVN] Updating a network or a subnet no longer allocates a metadata port
+    address on the ``dhcpv6-stateful`` subnets, an address the OVN database
+    synchronization then removed.

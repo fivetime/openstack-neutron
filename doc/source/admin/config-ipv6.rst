@@ -795,3 +795,27 @@ References
 The following presentation from the Barcelona Summit provides a great guide for
 setting up IPv6 with OpenStack: `Deploying IPv6 in OpenStack Environments
 <https://www.youtube.com/watch?v=j5hy11YlSOU>`_.
+
+Metadata port address on stateful IPv6 subnets
+----------------------------------------------
+
+With ML2/OVN, the metadata port has an address on the IPv4 subnets with DHCP
+enabled and on the ``slaac`` and ``dhcpv6-stateless`` subnets, where the IPAM
+assigns an address to all the ports of the network. With the
+``network_metadata_stateful_ipv6`` ML2 extension driver, the
+``metadata_stateful_ipv6_address`` network attribute, ``False`` by default,
+also gives it an address on the other IPv6 subnets with DHCP enabled, such as
+the ``dhcpv6-stateful`` ones. This address is configured in the metadata
+namespace of the chassis with a VIF port on the subnet.
+
+.. code-block:: console
+
+   $ openstack network set --enable-metadata-stateful-ipv6 my-network
+
+* It uses an address of the allocation pool of each of these subnets. If a pool
+  is exhausted, the request succeeds without the address, the error is logged
+  and the OVN database synchronization tries again in ``repair`` mode.
+* Setting it back to ``False`` releases the addresses.
+* It cannot be enabled on an external network.
+* It does not control the addresses on the ``slaac`` and ``dhcpv6-stateless``
+  subnets.

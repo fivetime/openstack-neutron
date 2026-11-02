@@ -24,6 +24,8 @@ import ddt
 import netaddr
 from neutron_lib.api.definitions import external_net
 from neutron_lib.api.definitions import network_internal_dns as ni_dns
+from neutron_lib.api.definitions import network_metadata_stateful_ipv6 as \
+    md_ipv6
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.api.definitions import qinq as qinq_apidef
 from neutron_lib.api.definitions import vlantransparent as vlan_apidef
@@ -1394,6 +1396,140 @@ class TestMetadataPorts(base.TestOVNFunctionalBase):
         self.assertIsNone(self._check_subnet_dhcp_options(subnet['id'],
                                                           '2001:db8::/64'))
         self._check_metadata_port(self.n1_id, [])
+
+
+class TestMetadataStatefulIpv6(base.TestOVNFunctionalBase):
+    _extension_drivers = ['port_security', 'network_metadata_stateful_ipv6']
+
+    def setUp(self):
+        super().setUp()
+        self._ovn_client = self.mech_driver._ovn_client
+        mock.patch.object(ovn_conf, 'is_ovn_metadata_enabled',
+                          return_value=True).start()
+
+    def _new_network(self, enabled=None):
+        kwargs = {}
+        if enabled is not None:
+            kwargs = {'arg_list': (md_ipv6.METADATA_STATEFUL_IPV6_ADDRESS, ),
+                      md_ipv6.METADATA_STATEFUL_IPV6_ADDRESS: enabled}
+        return self._make_network(self.fmt, 'n1', True, **kwargs)['network']
+
+    def _create_v6_subnet(self, network, mode=constants.DHCPV6_STATEFUL,
+                          cidr='2001:db8::/64', **kwargs):
+        res = self._create_subnet(
+            self.fmt, network['id'], cidr, ip_version=6,
+            ipv6_ra_mode=mode, ipv6_address_mode=mode, **kwargs)
+        return self.deserialize(self.fmt, res)['subnet']
+
+    def _update(self, resource, resource_id, attrs):
+        req = self.new_update_request(resource,
+                                      {resource[:-1]: attrs}, resource_id)
+        res = req.get_response(self.api)
+        self.assertEqual(200, res.status_int)
+        return self.deserialize(self.fmt, res)[resource[:-1]]
+
+    def _set_option(self, network, enabled):
+        return self._update(
+            'networks', network['id'],
+            {md_ipv6.METADATA_STATEFUL_IPV6_ADDRESS: enabled})
+
+    def _metadata_port(self, network):
+        res = self._list_ports(self.fmt, net_id=network['id'])
+        for port in self.deserialize(self.fmt, res)['ports']:
+            if utils.is_ovn_metadata_port(port):
+                return port
+        self.fail('No metadata port in network %s' % network['id'])
+
+    def _metadata_ips(self, network, subnet):
+        return [ip['ip_address'] for ip in
+                self._metadata_port(network)['fixed_ips']
+                if ip['subnet_id'] == subnet['id']]
+
+    def _sync(self, network):
+        self._ovn_client.update_metadata_port(self.context, network)
+
+    def test_disabled_by_default(self):
+        network = self._new_network()
+        self.assertIs(False, network[md_ipv6.METADATA_STATEFUL_IPV6_ADDRESS])
+        subnet = self._create_v6_subnet(network)
+        self.assertEqual([], self._metadata_ips(network, subnet))
+
+        # None of the paths allocating the address does it
+        self._update('subnets', subnet['id'], {'name': 'new'})
+        self.assertEqual([], self._metadata_ips(network, subnet))
+        network = self._update('networks', network['id'], {'mtu': 1400})
+        self.assertEqual([], self._metadata_ips(network, subnet))
+        self._sync(network)
+        self.assertEqual([], self._metadata_ips(network, subnet))
+
+    def test_disabled_sync_releases_the_address(self):
+        network = self._new_network()
+        subnet = self._create_v6_subnet(network)
+        port = self._metadata_port(network)
+        self._update('ports', port['id'],
+                     {'fixed_ips': [{'subnet_id': subnet['id']}]})
+        self.assertEqual(1, len(self._metadata_ips(network, subnet)))
+        self._sync(network)
+        self.assertEqual([], self._metadata_ips(network, subnet))
+
+    def test_enabled_on_create_and_kept_by_sync(self):
+        network = self._new_network(enabled=True)
+        subnet = self._create_v6_subnet(network)
+        ips = self._metadata_ips(network, subnet)
+        self.assertEqual(1, len(ips))
+        self.assertIn(netaddr.IPAddress(ips[0]),
+                      netaddr.IPNetwork(subnet['cidr']))
+        self._sync(network)
+        self.assertEqual(ips, self._metadata_ips(network, subnet))
+
+    def test_enable_and_disable_existing_subnet(self):
+        network = self._new_network()
+        subnet = self._create_v6_subnet(network)
+        v4_subnet = self.deserialize(self.fmt, self._create_subnet(
+            self.fmt, network['id'], '10.0.0.0/24'))['subnet']
+        v4_ips = self._metadata_ips(network, v4_subnet)
+        self.assertEqual(1, len(v4_ips))
+
+        network = self._set_option(network, True)
+        self.assertEqual(1, len(self._metadata_ips(network, subnet)))
+        self.assertEqual(v4_ips, self._metadata_ips(network, v4_subnet))
+
+        network = self._set_option(network, False)
+        self.assertEqual([], self._metadata_ips(network, subnet))
+        self.assertEqual(v4_ips, self._metadata_ips(network, v4_subnet))
+
+    def test_auto_address_subnets_are_not_controlled(self):
+        for enabled in (False, True):
+            network = self._new_network(enabled=enabled)
+            subnet = self._create_v6_subnet(network, mode=constants.IPV6_SLAAC)
+            ips = self._metadata_ips(network, subnet)
+            self.assertEqual(1, len(ips))
+            self._sync(network)
+            self.assertEqual(ips, self._metadata_ips(network, subnet))
+            network = self._set_option(network, not enabled)
+            self.assertEqual(ips, self._metadata_ips(network, subnet))
+
+    def test_exhausted_pool_does_not_fail_and_sync_retries(self):
+        network = self._new_network()
+        subnet = self._create_v6_subnet(
+            network, allocation_pools=[{'start': '2001:db8::5',
+                                        'end': '2001:db8::5'}])
+        taken = self._make_port(self.fmt, network['id'])['port']
+
+        network = self._set_option(network, True)
+        self.assertIs(True, network[md_ipv6.METADATA_STATEFUL_IPV6_ADDRESS])
+        self.assertEqual([], self._metadata_ips(network, subnet))
+
+        self._delete('ports', taken['id'])
+        self._sync(network)
+        self.assertEqual(['2001:db8::5'], self._metadata_ips(network, subnet))
+
+    def test_address_does_not_block_subnet_delete(self):
+        network = self._new_network(enabled=True)
+        subnet = self._create_v6_subnet(network)
+        self.assertEqual(1, len(self._metadata_ips(network, subnet)))
+        self._delete('subnets', subnet['id'])
+        self.assertEqual([], self._metadata_ips(network, subnet))
 
 
 class AgentWaitEvent(event.WaitEvent):

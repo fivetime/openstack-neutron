@@ -1,0 +1,11 @@
+---
+fixes:
+  - |
+    [OVN] The metadata agent extension now configures the IPv6 fixed IP
+    addresses of the metadata port in the metadata namespace, in the same way
+    as the IPv4 ones: only for the subnets with a VIF port on the chassis.
+    Before, these addresses did not answer and any such address added by hand
+    was deleted. The metadata proxy does not listen on them. The new addresses
+    are added the next time the network is provisioned on the chassis, for
+    example when the agent restarts. For more information, see bug
+    `2172738 <https://bugs.launchpad.net/neutron/+bug/2172738>`_.

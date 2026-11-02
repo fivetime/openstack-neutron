@@ -490,11 +490,9 @@ class TestMetadataAgent(base.BaseTestCase):
 
         self.assertEqual(network_id, net_name)
 
-        if utils.get_ip_version(port_ip) == n_const.IP_VERSION_4:
-            self.assertListEqual([port_ip], datapath_port_ips)
-            self.assertFalse(any_ip6)
-        else:
-            self.assertTrue(any_ip6)
+        self.assertListEqual([port_ip], datapath_port_ips)
+        self.assertEqual(
+            utils.get_ip_version(port_ip) == n_const.IP_VERSION_6, any_ip6)
         self.assertEqual(metada_port_mac, metadata_port_info.mac)
         self.assertSetEqual({metada_port_subnet_cidr},
                             metadata_port_info.ip_addresses)
@@ -539,23 +537,70 @@ class TestMetadataAgent(base.BaseTestCase):
         self.assertListEqual(['1.2.3.4'], datapath_port_ips)
         self.assertFalse(any_ip6)
 
-    def test__get_port_ip4_ips_and_ip6_flag_empty_mac(self):
+    def test__get_port_ips_and_ip6_flag_empty_mac(self):
         """Should return empty IPs for ports with empty MAC column."""
         port = mock.Mock()
         port.mac = []
         port.uuid = 'fake-uuid'
-        ip4_ips, any_ip6 = self.agent._get_port_ip4_ips_and_ip6_flag(port)
-        self.assertEqual([], ip4_ips)
+        ips, any_ip6 = self.agent._get_port_ips_and_ip6_flag(port)
+        self.assertEqual([], ips)
         self.assertFalse(any_ip6)
 
-    def test__get_port_ip4_ips_and_ip6_flag_unknown_mac(self):
+    def test__get_port_ips_and_ip6_flag_unknown_mac(self):
         """Should return empty IPs for ports with mac=['unknown']."""
         port = mock.Mock()
         port.mac = [ovn_const.UNKNOWN_ADDR]
         port.uuid = 'fake-uuid'
-        ip4_ips, any_ip6 = self.agent._get_port_ip4_ips_and_ip6_flag(port)
-        self.assertEqual([], ip4_ips)
+        ips, any_ip6 = self.agent._get_port_ips_and_ip6_flag(port)
+        self.assertEqual([], ips)
         self.assertFalse(any_ip6)
+
+    def test__get_port_ips_and_ip6_flag_dual_stack(self):
+        """Should return the addresses of both IP versions."""
+        port = makePort(mac=['fa:16:3e:e7:ac:ab 10.0.0.5 2001:db8::5'])
+        ips, any_ip6 = self.agent._get_port_ips_and_ip6_flag(port)
+        self.assertEqual(['10.0.0.5', '2001:db8::5'], ips)
+        self.assertTrue(any_ip6)
+
+    def test__process_cidrs_adds_ipv6_address_of_local_subnet(self):
+        """Only the subnets with a local port get their address configured."""
+        lla = 'fe80::f816:3eff:fe22:6518/64'
+        cidrs_to_add, cidrs_to_delete = self.agent._process_cidrs(
+            set(), ['2001:db8:1::5'],
+            {'2001:db8:1::2/64', '2001:db8:2::2/64', '10.0.0.2/24'}, lla)
+        self.assertEqual(
+            {'2001:db8:1::2/64', n_const.METADATA_CIDR,
+             n_const.METADATA_V6_CIDR, lla},
+            cidrs_to_add)
+        self.assertEqual(set(), cidrs_to_delete)
+
+    def test__process_cidrs_keeps_configured_ipv6_address(self):
+        """A second provisioning must not touch the address."""
+        lla = 'fe80::f816:3eff:fe22:6518/64'
+        current = {'2001:db8:1::2/64', n_const.METADATA_CIDR,
+                   n_const.METADATA_V6_CIDR, lla}
+        cidrs_to_add, cidrs_to_delete = self.agent._process_cidrs(
+            current, ['2001:db8:1::5'], {'2001:db8:1::2/64'}, lla)
+        self.assertEqual(set(), cidrs_to_add)
+        self.assertEqual(set(), cidrs_to_delete)
+
+    def test__process_cidrs_deletes_ipv6_address_of_inactive_subnet(self):
+        """The address goes away with the last local port of its subnet."""
+        lla = 'fe80::f816:3eff:fe22:6518/64'
+        current = {'2001:db8:1::2/64', '2001:db8:2::2/64',
+                   n_const.METADATA_CIDR, n_const.METADATA_V6_CIDR, lla}
+        cidrs_to_add, cidrs_to_delete = self.agent._process_cidrs(
+            current, ['2001:db8:1::5'],
+            {'2001:db8:1::2/64', '2001:db8:2::2/64'}, lla)
+        self.assertEqual(set(), cidrs_to_add)
+        self.assertEqual({'2001:db8:2::2/64'}, cidrs_to_delete)
+
+    def test__process_cidrs_skips_ipv6_address_when_ipv6_disabled(self):
+        self.ipv6.return_value = False
+        cidrs_to_add, _ = self.agent._process_cidrs(
+            set(), ['10.0.0.5', '2001:db8:1::5'],
+            {'2001:db8:1::2/64', '10.0.0.2/24'}, None)
+        self.assertEqual({'10.0.0.2/24', n_const.METADATA_CIDR}, cidrs_to_add)
 
     def _test_provision_datapath(self, ipv6_enabled):
         """Test datapath provisioning.

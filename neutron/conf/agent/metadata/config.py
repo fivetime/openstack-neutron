@@ -177,6 +177,27 @@ METADATA_HAPROXY_OPTS = [
                min=1,
                help=_('Maximum time in seconds to wait for a new HTTP '
                       'request on a keep-alive connection.')),
+    cfg.BoolOpt('shared_proxy',
+                default=False,
+                help=_('ML2/OVN only. Serve every metadata namespace of a '
+                       'node from one haproxy, instead of one haproxy per '
+                       'network. This saves memory on nodes with many '
+                       'networks. One process then serves all networks: if '
+                       'it stops, metadata stops for all of them until it '
+                       'is restarted, and a change of networks is a '
+                       'reload. Requires haproxy built with network '
+                       'namespace support.')),
+    cfg.IntOpt('shared_proxy_maxconn',
+               default=65536,
+               min=1024,
+               help=_('Maximum connections of the shared haproxy, for all '
+                      'networks together.')),
+    cfg.IntOpt('shared_proxy_network_maxconn',
+               default=256,
+               min=1,
+               help=_('Maximum connections of the shared haproxy on each '
+                      'listening socket, so that a network cannot take all '
+                      'of shared_proxy_maxconn.')),
 ]
 
 

@@ -32,6 +32,7 @@ from neutron.agent.linux import iptables_manager
 from neutron.agent.ovn.extensions import extension_manager
 from neutron.agent.ovn.extensions.metadata import driver as meta_driver
 from neutron.agent.ovn.extensions.metadata import server_socket as meta_server
+from neutron.agent.ovn.extensions.metadata import shared_proxy
 from neutron.common.ovn import constants as ovn_const
 from neutron.common.ovn import utils as ovn_utils
 from neutron.common import utils
@@ -291,6 +292,7 @@ class MetadataAgent:
         self._sb_idl = None
         self._post_fork_event = threading.Event()
         self._chassis = None
+        self._shared_proxy = None
 
     @property
     def conf(self):
@@ -379,6 +381,9 @@ class MetadataAgent:
         which were serving metadata but are no longer needed.
         """
 
+        if not self.conf.metadata_haproxy.shared_proxy:
+            shared_proxy.SharedMetadataProxy.stop_leftover(self.conf)
+
         # first, clean up namespaces that should no longer deploy
         system_namespaces = tuple(
             ns.decode('utf-8') if isinstance(ns, bytes) else ns
@@ -389,6 +394,9 @@ class MetadataAgent:
                 ovn_utils.get_network_name_from_datapath(datapath))
             for datapath in (pb.datapath for pb in net_port_bindings)
         }
+        if self.conf.metadata_haproxy.shared_proxy:
+            self._get_shared_proxy().retain(
+                [self._get_network_name(ns) for ns in metadata_namespaces])
         unused_namespaces = [ns for ns in system_namespaces if
                              ns.startswith(NS_PREFIX) and
                              ns not in metadata_namespaces]
@@ -421,6 +429,17 @@ class MetadataAgent:
     def _vif_ports(self, ports):
         return (p for p in ports if p.type in OVN_VIF_PORT_TYPES)
 
+    def _get_shared_proxy(self):
+        if self._shared_proxy is None:
+            self._shared_proxy = shared_proxy.SharedMetadataProxy(self.conf)
+            self._shared_proxy.start()
+        return self._shared_proxy
+
+    def _destroy_network_proxy(self, net_name, namespace):
+        """Stops the per-network haproxy, which holds the metadata address."""
+        meta_driver.MetadataDriver.destroy_monitored_metadata_proxy(
+            self._process_monitor, net_name, self.conf, namespace)
+
     def teardown_datapath(self, net_name):
         """Unprovision this datapath to stop serving metadata.
 
@@ -429,6 +448,8 @@ class MetadataAgent:
         """
         namespace = self._get_namespace_name(net_name)
         ip = ip_lib.IPWrapper(namespace)
+        if self.conf.metadata_haproxy.shared_proxy:
+            self._get_shared_proxy().remove(net_name)
         # If the namespace doesn't exist, return
         if not ip.netns.exists(namespace):
             return
@@ -436,8 +457,7 @@ class MetadataAgent:
         LOG.info("Cleaning up %s namespace which is not needed anymore",
                  namespace)
 
-        meta_driver.MetadataDriver.destroy_monitored_metadata_proxy(
-            self._process_monitor, net_name, self.conf, namespace)
+        self._destroy_network_proxy(net_name, namespace)
 
         veth_name = self._get_veth_name(net_name)
         self.ovs_idl.del_port(veth_name[0]).execute()
@@ -702,6 +722,17 @@ class MetadataAgent:
         bind_address_v6 = None
         if lla and netutils.is_ipv6_enabled():
             bind_address_v6 = n_const.METADATA_V6_IP
+
+        if self.conf.metadata_haproxy.shared_proxy:
+            self._destroy_network_proxy(net_name, namespace)
+            bind_address_v6, bind_interface = (
+                meta_driver.MetadataDriver.wait_ipv6_bind_address(
+                    namespace, net_name, bind_address_v6, veth_name[1]))
+            self._get_shared_proxy().add(
+                net_name, namespace, n_const.METADATA_V4_IP,
+                n_const.METADATA_PORT, bind_address_v6,
+                bind_interface or veth_name[1])
+            return
 
         # Spawn metadata proxy if it's not already running.
         meta_driver.MetadataDriver.spawn_monitored_metadata_proxy(

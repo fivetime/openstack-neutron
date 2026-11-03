@@ -41,6 +41,7 @@ ip_exec: IpNetnsExecFilter, ip, root
 # METADATA PROXY
 haproxy: RegExpFilter, haproxy, root, haproxy, -f, .*
 haproxy_env: EnvFilter, env, root, PROCESS_TAG=, haproxy, -f, .*
+haproxy_reload: RegExpFilter, haproxy, root, haproxy, -f, .*, -x, .*, -sf, [0-9]+
 
 # DHCP
 dnsmasq: CommandFilter, dnsmasq, root

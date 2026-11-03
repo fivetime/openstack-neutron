@@ -64,6 +64,9 @@ class ConfFixture(config_fixture.Config):
             meta_conf.UNIX_DOMAIN_METADATA_PROXY_OPTS, self.conf)
         ovn_meta_conf.register_meta_conf_opts(
             meta_conf.METADATA_PROXY_HANDLER_OPTS, self.conf)
+        ovn_meta_conf.register_meta_conf_opts(
+            meta_conf.METADATA_HAPROXY_OPTS, self.conf,
+            group=meta_conf.HAPROXY_GROUP)
         ovn_conf.register_opts()
 
 
@@ -710,6 +713,122 @@ class TestMetadataAgent(base.BaseTestCase):
                 bind_address_v6=bind_address_v6,
                 bind_interface='veth_1')
             mock_checksum.assert_called_once_with(namespace_name)
+
+    def _provision_with(self, shared, v6_result):
+        cfg.CONF.set_override('shared_proxy', shared, meta_conf.HAPROXY_GROUP)
+        self.addCleanup(cfg.CONF.clear_override, 'shared_proxy',
+                        meta_conf.HAPROXY_GROUP)
+        info = agent.MetadataPortInfo(
+            mac='aa:bb:cc:dd:ee:ff', ip_addresses=['10.0.0.1/23'],
+            logical_port='lp', mtu=1500)
+        params = ('net', ['10.0.0.1'], True, info)
+        proxy = mock.Mock()
+        self.agent.ovs_idl.list_br.return_value.execute.return_value = (
+            ['br-int', 'br-fake'])
+        with mock.patch.object(self.agent, '_get_provision_params',
+                               return_value=params), \
+                mock.patch.object(ip_lib, 'device_exists', return_value=True),\
+                mock.patch.object(ip_lib.IPDevice, 'exists',
+                                  return_value=True), \
+                mock.patch.object(ip_link, 'set_up'), \
+                mock.patch.object(ip_link, 'set_address'), \
+                mock.patch.object(ip_link, 'set_mtu'), \
+                mock.patch.object(ip_addr, 'list', return_value=[]), \
+                mock.patch.object(ip_addr, 'add_multiple'), \
+                mock.patch.object(ip_addr, 'delete_multiple', create=True), \
+                mock.patch.object(agent.MetadataAgent, '_get_veth_name',
+                                  return_value=['veth_0', 'veth_1']), \
+                mock.patch.object(self.agent, '_ensure_datapath_checksum'), \
+                mock.patch.object(self.agent, '_get_shared_proxy',
+                                  return_value=proxy), \
+                mock.patch.object(
+                    driver.MetadataDriver, 'wait_ipv6_bind_address',
+                    return_value=v6_result), \
+                mock.patch.object(
+                    driver.MetadataDriver,
+                    'destroy_monitored_metadata_proxy') as destroy, \
+                mock.patch.object(
+                    driver.MetadataDriver,
+                    'spawn_monitored_metadata_proxy') as spawn:
+            self.agent.provision_datapath(self.ports[0])
+        return proxy, destroy, spawn
+
+    def test_provision_datapath_shared_proxy(self):
+        v6 = (n_const.METADATA_V6_IP, 'veth_1')
+        proxy, destroy, spawn = self._provision_with(True, v6)
+        spawn.assert_not_called()
+        destroy.assert_called_once_with(
+            self.agent._process_monitor, 'net', self.agent.conf,
+            'ovnmeta-net')
+        proxy.add.assert_called_once_with(
+            'net', 'ovnmeta-net', n_const.METADATA_V4_IP,
+            n_const.METADATA_PORT, n_const.METADATA_V6_IP, 'veth_1')
+
+    def test_provision_datapath_shared_proxy_dad_failed(self):
+        proxy, _destroy, _spawn = self._provision_with(True, (None, None))
+        proxy.add.assert_called_once_with(
+            'net', 'ovnmeta-net', n_const.METADATA_V4_IP,
+            n_const.METADATA_PORT, None, 'veth_1')
+
+    def test_provision_datapath_option_off_uses_one_proxy_per_network(self):
+        proxy, destroy, spawn = self._provision_with(False, (None, None))
+        proxy.add.assert_not_called()
+        destroy.assert_not_called()
+        spawn.assert_called_once()
+
+    def test_teardown_datapath_shared_proxy_removes_before_the_namespace(self):
+        cfg.CONF.set_override('shared_proxy', True, meta_conf.HAPROXY_GROUP)
+        self.addCleanup(cfg.CONF.clear_override, 'shared_proxy',
+                        meta_conf.HAPROXY_GROUP)
+        order = mock.Mock()
+        with mock.patch.object(ip_netns, 'exists', return_value=True), \
+                mock.patch.object(ip_lib, 'device_exists',
+                                  return_value=False), \
+                mock.patch.object(self.agent, '_get_shared_proxy',
+                                  return_value=order.proxy), \
+                mock.patch.object(
+                    driver.MetadataDriver,
+                    'destroy_monitored_metadata_proxy'), \
+                mock.patch.object(ip_wrap, 'garbage_collect_namespace',
+                                  order.gc):
+            self.agent.teardown_datapath('net')
+        self.assertEqual([mock.call.proxy.remove('net'), mock.call.gc()],
+                         order.mock_calls)
+
+    def test_teardown_datapath_shared_proxy_namespace_already_gone(self):
+        cfg.CONF.set_override('shared_proxy', True, meta_conf.HAPROXY_GROUP)
+        self.addCleanup(cfg.CONF.clear_override, 'shared_proxy',
+                        meta_conf.HAPROXY_GROUP)
+        proxy = mock.Mock()
+        with mock.patch.object(ip_netns, 'exists', return_value=False), \
+                mock.patch.object(self.agent, '_get_shared_proxy',
+                                  return_value=proxy):
+            self.agent.teardown_datapath('net')
+        proxy.remove.assert_called_once_with('net')
+
+    def test_sync_shared_proxy_retains_only_the_networks_in_use(self):
+        cfg.CONF.set_override('shared_proxy', True, meta_conf.HAPROXY_GROUP)
+        self.addCleanup(cfg.CONF.clear_override, 'shared_proxy',
+                        meta_conf.HAPROXY_GROUP)
+        proxy = mock.Mock()
+        with mock.patch.object(self.agent, '_get_shared_proxy',
+                               return_value=proxy), \
+                mock.patch.object(self.agent, 'get_networks_port_bindings',
+                                  return_value=[self.ports[0]]), \
+                mock.patch.object(ip_lib, 'list_network_namespaces',
+                                  return_value=[]):
+            self.agent.sync(provision=False)
+        proxy.retain.assert_called_once_with(['0'])
+
+    def test_sync_stops_a_shared_proxy_left_by_the_option(self):
+        with mock.patch.object(agent.shared_proxy.SharedMetadataProxy,
+                               'stop_leftover') as stop, \
+                mock.patch.object(self.agent, 'get_networks_port_bindings',
+                                  return_value=[]), \
+                mock.patch.object(ip_lib, 'list_network_namespaces',
+                                  return_value=[]):
+            self.agent.sync(provision=False)
+        stop.assert_called_once_with(self.agent.conf)
 
     def test_provision_datapath_ipv6(self):
         self._test_provision_datapath(True)

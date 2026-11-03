@@ -255,11 +255,10 @@ class MetadataDriverBase(metaclass=abc.ABCMeta):
 
         return callback
 
-    @classmethod
-    def spawn_monitored_metadata_proxy(cls, monitor, ns_name, port, conf,
-                                       bind_address="0.0.0.0", network_id=None,
-                                       router_id=None, bind_address_v6=None,
-                                       bind_interface=None):
+    @staticmethod
+    def wait_ipv6_bind_address(ns_name, network_id, bind_address_v6,
+                               bind_interface):
+        """Returns the address and interface to bind, None if DAD failed."""
         if bind_interface is not None and bind_address_v6 is not None:
             # HAProxy cannot bind() until IPv6 Duplicate Address Detection
             # completes. We must wait until the address leaves its 'tentative'
@@ -290,6 +289,16 @@ class MetadataDriverBase(metaclass=abc.ABCMeta):
 
                 # Do not use the address or interface when DAD fails
                 bind_address_v6 = bind_interface = None
+
+        return bind_address_v6, bind_interface
+
+    @classmethod
+    def spawn_monitored_metadata_proxy(cls, monitor, ns_name, port, conf,
+                                       bind_address="0.0.0.0", network_id=None,
+                                       router_id=None, bind_address_v6=None,
+                                       bind_interface=None):
+        bind_address_v6, bind_interface = cls.wait_ipv6_bind_address(
+            ns_name, network_id, bind_address_v6, bind_interface)
 
         # If the HAProxy running instance configuration is different from
         # the one passed in this call, the HAProxy is stopped. The new

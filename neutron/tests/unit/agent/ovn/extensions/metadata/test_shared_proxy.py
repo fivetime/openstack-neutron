@@ -11,8 +11,10 @@
 #    under the License.
 
 import json
+import os
 from unittest import mock
 
+import fixtures
 from neutron_lib import exceptions
 from oslo_config import cfg
 
@@ -275,3 +277,37 @@ class TestSharedMetadataProxy(base.BaseTestCase):
         self.proxy.add(NET1, *entry(NET1))
         self.proxy.retain([NET1, NET2])
         self.reload.assert_not_called()
+
+
+class TestSharedMetadataProxyFiles(base.BaseTestCase):
+    """The files themselves: a new pod starts with an empty state path."""
+
+    def setUp(self):
+        super().setUp()
+        self.state_path = os.path.join(
+            self.useFixture(fixtures.TempDir()).path, 'new')
+        self.conf = cfg.ConfigOpts()
+        self.conf.register_opts(meta_conf.SHARED_OPTS)
+        self.conf.register_opts(meta_conf.METADATA_HAPROXY_OPTS,
+                                meta_conf.HAPROXY_GROUP)
+        self.conf.register_opts(meta_conf.METADATA_RATE_LIMITING_OPTS,
+                                meta_conf.RATE_LIMITING_GROUP)
+        self.conf.register_opt(cfg.StrOpt('state_path'))
+        self.conf.register_opt(cfg.StrOpt('external_pids'))
+        self.conf([], project='neutron', default_config_files=[])
+        self.conf.set_override('state_path', self.state_path)
+        self.conf.set_override('metadata_proxy_user', 'root')
+        self.conf.set_override('metadata_proxy_group', 'root')
+        self.conf.set_override('metadata_proxy_socket', '/state/md')
+        self.pm = mock.Mock(active=False, pid=None, cmd_addl_env={})
+        self.pm.get_pid_file_name.return_value = '/state/pid'
+        mock.patch.object(shared_proxy.SharedMetadataProxy, 'process_manager',
+                          return_value=self.pm).start()
+
+    def test_first_start_creates_the_directory(self):
+        proxy = shared_proxy.SharedMetadataProxy(self.conf)
+        self.assertTrue(proxy._apply_networks({NET1: entry(NET1)}))
+        self.pm.enable.assert_called_once_with()
+        self.assertTrue(os.path.exists(proxy.cfg_path))
+        with open(proxy._state_path) as f:
+            self.assertIn(NET1, json.load(f))

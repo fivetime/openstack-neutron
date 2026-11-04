@@ -261,6 +261,7 @@ class SharedMetadataProxy:
             if active:
                 self._pm.disable(sig=str(int(signal.SIGTERM)))
             return True
+        fileutils.ensure_tree(self._cfg_dir, mode=0o755)
         self._write_state(networks)
         config = self.render(networks, self._pm.get_pid_file_name())
         if active and config == self._read_config():
@@ -290,7 +291,6 @@ class SharedMetadataProxy:
         return linux_utils.read_if_exists(self.cfg_path, run_as_root=True)
 
     def _write_config(self, config):
-        fileutils.ensure_tree(self._cfg_dir, mode=0o755)
         temp = self.cfg_path + '.new'
         with open(temp, 'w') as f:
             f.write(config)

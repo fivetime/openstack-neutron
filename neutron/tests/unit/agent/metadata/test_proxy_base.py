@@ -12,8 +12,11 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import os
+import socket
 from unittest import mock
 
+import fixtures
 import requests
 import testtools
 import webob
@@ -151,6 +154,25 @@ class TestMetadataProxyHandlerBase(base.BaseTestCase):
             mock_request.side_effect = requests.ConnectionError()
             retval = self.handler._proxy_request('the_id', 'project_id', req)
             self.assertIsInstance(retval, webob.exc.HTTPServiceUnavailable)
+
+
+class TestMetadataProxyServer(base.BaseTestCase):
+
+    def test_listen_backlog_is_metadata_backlog(self):
+        backlog = 16
+        conf = self.useFixture(ConfFixture(cfg.CONF))
+        conf.config(metadata_backlog=backlog)
+        path = os.path.join(self.useFixture(fixtures.TempDir()).path, 'sock')
+        server = proxy_base.MetadataProxyServer(0, path, mock.Mock())
+        self.addCleanup(server.server_close)
+
+        # Nothing accepts here, so every connection stays in the queue. A
+        # non-blocking connect fails with EAGAIN once the queue is full.
+        for _ in range(backlog):
+            client = socket.socket(socket.AF_UNIX)
+            self.addCleanup(client.close)
+            client.setblocking(False)
+            client.connect(path)
 
 
 class FakeUnixDomainMetadataProxy(proxy_base.UnixDomainMetadataProxyBase):
